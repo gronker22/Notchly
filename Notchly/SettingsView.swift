@@ -23,6 +23,8 @@ struct SettingsView: View {
                 Divider()
                 teamsSection
                 Divider()
+                notificationsSection
+                Divider()
                 testSection
             }
             .padding(20)
@@ -84,6 +86,22 @@ struct SettingsView: View {
     private func addTeam() {
         sports.addTeam(newTeam)
         newTeam = ""
+    }
+
+    // MARK: Notifications (Full Disk Access)
+
+    private var notificationsSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Notification peek").font(.headline)
+            Text("To briefly show incoming notifications in the notch, Notchly needs Full Disk Access (macOS keeps notifications in a protected database). Enable Notchly there, then relaunch.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Open Full Disk Access settings") {
+                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
     }
 
     // MARK: Test fetch
