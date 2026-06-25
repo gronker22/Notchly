@@ -55,6 +55,11 @@ struct NotchView: View {
     // Live sports
     @StateObject private var sports = SportsManager()
 
+    // Incoming-notification peek
+    @StateObject private var notifications = NotificationInterceptor()
+    @State private var bannerItem: NotificationItem?
+    @State private var bannerDismiss: DispatchWorkItem?
+
     // Spring-driven, path-level animation parameters.
     @State private var width: CGFloat
     @State private var height: CGFloat
@@ -86,15 +91,20 @@ struct NotchView: View {
             // Single blob, or two split pills.
             bubbleBackground
 
-            // Collapsed presentation: split pair, or the normal single overlay.
-            if showSplit {
-                splitContent
-            } else {
-                collapsedContent
+            // Collapsed presentation (hidden while a notification banner shows).
+            if bannerItem == nil {
+                if showSplit {
+                    splitContent
+                } else {
+                    collapsedContent
+                }
             }
 
             // Expanded: full module stack.
             expandedContent
+
+            // Incoming-notification peek (morphs the collapsed notch for 3s).
+            bannerOverlay
 
             // PHASE 6: drag-to-dock zones, shown only while a drag is targeting.
             if state.isDragTargeting {
@@ -134,6 +144,11 @@ struct NotchView: View {
             clipboard.start()
             // Live sports polling.
             sports.start()
+            // Incoming notification peek.
+            notifications.start()
+        }
+        .onChange(of: notifications.latest) { _, item in
+            if let item { showBanner(item) }
         }
         // PHASE 3: drive the imminent-event pulse loop.
         .onChange(of: calendar.isImminent) { _, imminent in
@@ -645,6 +660,85 @@ struct NotchView: View {
     private var expandedTargetHeight: CGFloat {
         let h = measuredContentHeight > 0 ? measuredContentHeight : geometry.expandedHeight
         return min(geometry.expandedHeight, max(geometry.collapsedHeight, h))
+    }
+
+    // MARK: - Incoming notification banner
+
+    private var bannerWidth: CGFloat { min(geometry.expandedWidth, 360) }
+    private var bannerHeight: CGFloat { geometry.collapsedHeight + 26 }
+
+    @ViewBuilder
+    private var bannerOverlay: some View {
+        if let item = bannerItem, !state.isExpanded {
+            HStack(spacing: 10) {
+                if let icon = appIcon(item.bundleID) {
+                    Image(nsImage: icon)
+                        .resizable()
+                        .frame(width: 26, height: 26)
+                }
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title.isEmpty ? appName(item.bundleID) : item.title)
+                        .font(.system(size: 11, weight: .semibold, design: .rounded))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    if !item.body.isEmpty {
+                        Text(firstLine(item.body))
+                            .font(.system(size: 10, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.7))
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 14)
+            .padding(.bottom, 6)
+            .frame(width: bannerWidth, height: bannerHeight, alignment: .bottom)
+            .transition(.opacity)
+            .allowsHitTesting(false)
+        }
+    }
+
+    private func showBanner(_ item: NotificationItem) {
+        // Don't interrupt an open panel.
+        guard !state.isExpanded else { return }
+
+        bannerItem = item
+        withAnimation(sizeSpring) {
+            width = bannerWidth
+            height = bannerHeight
+        }
+
+        bannerDismiss?.cancel()
+        let work = DispatchWorkItem {
+            bannerItem = nil
+            if !state.isExpanded {
+                withAnimation(sizeSpring) {
+                    width = geometry.collapsedWidth
+                    height = geometry.collapsedHeight
+                }
+            }
+        }
+        bannerDismiss = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
+    }
+
+    private func appIcon(_ bundleID: String) -> NSImage? {
+        guard !bundleID.isEmpty,
+              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+        else { return nil }
+        return NSWorkspace.shared.icon(forFile: url.path)
+    }
+
+    private func appName(_ bundleID: String) -> String {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
+            return "Notification"
+        }
+        return FileManager.default.displayName(atPath: url.path)
+            .replacingOccurrences(of: ".app", with: "")
+    }
+
+    private func firstLine(_ s: String) -> String {
+        s.components(separatedBy: .newlines).first ?? s
     }
 
     private func animate(to expanded: Bool) {

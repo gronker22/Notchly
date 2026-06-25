@@ -72,6 +72,10 @@ struct LiveGame: Identifiable {
     let statusDetail: String      // clock/minute, "Today 8:30 PM", or "Final"
     let league: League
     let link: URL?
+    let homeLogo: URL?
+    let awayLogo: URL?
+    let homeColor: String?        // hex, no leading '#'
+    let awayColor: String?
 }
 
 struct FinishedGame: Identifiable {
@@ -82,6 +86,10 @@ struct FinishedGame: Identifiable {
     let awayScore: Int
     let league: League
     let link: URL?
+    let homeLogo: URL?
+    let awayLogo: URL?
+    let homeColor: String?
+    let awayColor: String?
 }
 
 // MARK: - Manager
@@ -260,7 +268,11 @@ final class SportsManager: ObservableObject {
             state: state,
             statusDetail: statusDetail(for: event, state: state),
             league: league,
-            link: firstLink(event)
+            link: firstLink(event),
+            homeLogo: home.team?.logo.flatMap { URL(string: $0) },
+            awayLogo: away.team?.logo.flatMap { URL(string: $0) },
+            homeColor: home.team?.color,
+            awayColor: away.team?.color
         )
     }
 
@@ -283,7 +295,11 @@ final class SportsManager: ObservableObject {
             homeScore: homeScore,
             awayScore: awayScore,
             league: league,
-            link: firstLink(event)
+            link: firstLink(event),
+            homeLogo: home.team?.logo.flatMap { URL(string: $0) },
+            awayLogo: away.team?.logo.flatMap { URL(string: $0) },
+            homeColor: home.team?.color,
+            awayColor: away.team?.color
         )
     }
 
@@ -299,12 +315,9 @@ final class SportsManager: ObservableObject {
         switch state {
         case .pre:
             if let date = Self.parseDate(event.date) {
-                let f = DateFormatter()
-                f.dateFormat = "h:mm a"
-                f.timeZone = .current
-                return "Today \(f.string(from: date))"
+                return Self.upcomingLabel(for: date)
             }
-            return "Today"
+            return "Upcoming"
         case .live:
             return event.status?.type?.shortDetail
                 ?? event.status?.displayClock
@@ -316,11 +329,42 @@ final class SportsManager: ObservableObject {
 
     private static func parseDate(_ string: String?) -> Date? {
         guard let string else { return nil }
+        // ESPN often omits seconds (e.g. "2026-08-21T19:00Z"), which the strict
+        // ISO8601 parser rejects — so try a set of explicit UTC formats.
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        for fmt in ["yyyy-MM-dd'T'HH:mm'Z'", "yyyy-MM-dd'T'HH:mm:ss'Z'",
+                    "yyyy-MM-dd'T'HH:mmZ", "yyyy-MM-dd'T'HH:mm:ssZ"] {
+            f.dateFormat = fmt
+            if let d = f.date(from: string) { return d }
+        }
         let iso = ISO8601DateFormatter()
-        iso.formatOptions = [.withInternetDateTime]
-        if let d = iso.date(from: string) { return d }
-        iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         return iso.date(from: string)
+    }
+
+    /// "Today 8:30 PM", "Tomorrow 8:30 PM", "Mon 8:30 PM", or "Aug 21 · 8:00 PM".
+    private static func upcomingLabel(for date: Date) -> String {
+        let cal = Calendar.current
+        let timeF = DateFormatter()
+        timeF.locale = Locale(identifier: "en_US_POSIX")
+        timeF.dateFormat = "h:mm a"
+        timeF.timeZone = .current
+        let time = timeF.string(from: date)
+
+        if cal.isDateInToday(date) { return "Today \(time)" }
+        if cal.isDateInTomorrow(date) { return "Tomorrow \(time)" }
+
+        let days = cal.dateComponents([.day], from: Date(), to: date).day ?? 0
+        let other = DateFormatter()
+        other.locale = Locale(identifier: "en_US_POSIX")
+        other.timeZone = .current
+        if days >= 0 && days < 6 {
+            other.dateFormat = "EEE"            // weekday this week
+            return "\(other.string(from: date)) \(time)"
+        }
+        other.dateFormat = "MMM d"               // further out
+        return "\(other.string(from: date)) · \(time)"
     }
 
     private func firstLink(_ event: ESPNEvent) -> URL? {
@@ -393,6 +437,8 @@ struct ESPNTeam: Decodable {
     let displayName: String?
     let shortDisplayName: String?
     let abbreviation: String?
+    let logo: String?
+    let color: String?
 }
 
 struct ESPNLink: Decodable {

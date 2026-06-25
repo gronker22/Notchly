@@ -99,37 +99,45 @@ struct SportsView: View {
 
     private func liveRow(_ game: LiveGame) -> some View {
         let isPre = game.state == .pre
+        let isLive = game.state == .live
         return HStack(spacing: 6) {
-            if game.state == .live {
+            if isLive {
                 PulsingDot()
             } else {
                 Circle().fill(.clear).frame(width: 6, height: 6)
             }
 
+            // Home: logo + abbreviation
+            TeamBadge(logo: game.homeLogo, colorHex: game.homeColor)
             Text(game.homeAbbr)
                 .frame(width: 34, alignment: .leading)
 
+            // Scoreboard (live/final) or a dash for upcoming
             Text(scoreString(game))
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: 12, weight: .bold, design: .monospaced))
                 .foregroundStyle(isPre ? .white.opacity(0.4) : .white)
 
+            // Away: abbreviation + logo
             Text(game.awayAbbr)
-                .frame(width: 34, alignment: .leading)
+                .frame(width: 34, alignment: .trailing)
+            TeamBadge(logo: game.awayLogo, colorHex: game.awayColor)
 
             Spacer(minLength: 4)
 
+            // Live → elapsed clock (green); upcoming → kickoff/tip-off time.
             Text(game.statusDetail)
-                .font(.system(size: 9, design: .rounded))
-                .foregroundStyle(isPre ? .white.opacity(0.4) : .white.opacity(0.6))
+                .font(.system(size: 9, weight: isLive ? .semibold : .regular, design: .rounded))
+                .foregroundStyle(isLive ? Color.green
+                                 : isPre ? .white.opacity(0.45) : .white.opacity(0.6))
                 .lineLimit(1)
         }
         .font(.system(size: 11, weight: .medium, design: .rounded))
-        .foregroundStyle(isPre ? .white.opacity(0.4) : .white)
+        .foregroundStyle(isPre ? .white.opacity(0.5) : .white)
         .contentShape(Rectangle())
     }
 
     private func scoreString(_ game: LiveGame) -> String {
-        if game.state == .pre { return "—" }
+        if game.state == .pre { return "vs" }
         let h = game.homeScore.map(String.init) ?? "0"
         let a = game.awayScore.map(String.init) ?? "0"
         return "\(h)–\(a)"
@@ -153,16 +161,18 @@ struct SportsView: View {
 
     private func resultRow(_ game: FinishedGame) -> some View {
         HStack(spacing: 6) {
+            TeamBadge(logo: game.homeLogo, colorHex: game.homeColor)
             Text(game.homeTeam)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             Text("\(game.homeScore)–\(game.awayScore)")
-                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
 
             Text(game.awayTeam)
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
+            TeamBadge(logo: game.awayLogo, colorHex: game.awayColor)
 
             Text(game.league.badge)
                 .font(.system(size: 8, weight: .bold, design: .rounded))
@@ -187,6 +197,50 @@ struct SportsView: View {
     private func open(_ url: URL?) {
         guard let url else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+// MARK: - Team badge (logo, falling back to team-colour dot)
+
+struct TeamBadge: View {
+    let logo: URL?
+    let colorHex: String?
+
+    var body: some View {
+        Group {
+            if let logo {
+                AsyncImage(url: logo) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFit()
+                    } else {
+                        colorDot
+                    }
+                }
+            } else {
+                colorDot
+            }
+        }
+        .frame(width: 16, height: 16)
+    }
+
+    private var colorDot: some View {
+        Circle()
+            .fill(Color(teamHex: colorHex) ?? Color.white.opacity(0.4))
+            .frame(width: 11, height: 11)
+    }
+}
+
+extension Color {
+    /// Init from an ESPN team colour hex string ("552583", optionally "#552583").
+    init?(teamHex hex: String?) {
+        guard var s = hex?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
+        s = s.replacingOccurrences(of: "#", with: "")
+        guard s.count == 6, let value = UInt64(s, radix: 16) else { return nil }
+        self = Color(
+            red: Double((value >> 16) & 0xFF) / 255,
+            green: Double((value >> 8) & 0xFF) / 255,
+            blue: Double(value & 0xFF) / 255
+        )
     }
 }
 
