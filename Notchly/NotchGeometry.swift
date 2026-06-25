@@ -35,8 +35,13 @@ struct NotchGeometry {
 
     /// Collapsed bubble width (~200pt), at least as wide as the real notch.
     var collapsedWidth: CGFloat { max(200, notchWidth) }
-    /// Collapsed bubble height (~36pt), at least as tall as the real notch.
-    var collapsedHeight: CGFloat { max(36, notchHeight) }
+    /// Collapsed bubble height. We extend a small strip BELOW the physical notch
+    /// so collapsed content (e.g. the running Pomodoro countdown) renders on live
+    /// screen instead of being hidden in/behind the notch cutout.
+    var collapsedHeight: CGFloat { max(36, notchHeight) + 16 }
+
+    /// The strip below the notch where collapsed content is drawn.
+    var collapsedContentInset: CGFloat { max(36, notchHeight) }
 
     // MARK: - Expanded bubble sizing (Phase 1 spec)
 

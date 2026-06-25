@@ -322,6 +322,10 @@ struct NotchView: View {
                 collapsedMediaIndicator
             }
             .padding(.horizontal, 12)
+            .padding(.bottom, 3)
+            // Sit the info row in the strip BELOW the notch (live screen), so the
+            // running countdown etc. is actually visible and not hidden in the notch.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
             .animation(.easeInOut(duration: 0.25), value: network.showsTicker)
             .animation(.easeInOut(duration: 0.25), value: media.micActive)
             .animation(.easeInOut(duration: 0.25), value: media.cameraActive)
@@ -460,11 +464,16 @@ struct NotchView: View {
                 Text(pomodoro.phase == .work ? "Focus" : "Break")
                     .font(.system(.caption2, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white.opacity(0.6))
+                    .lineLimit(1)
+                    .fixedSize()                // never wrap "Focus" → "Fo-cus"
                 Text(pomodoro.remainingString)
                     .font(.system(.subheadline, design: .rounded).weight(.semibold).monospacedDigit())
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .fixedSize()
                     .id(pomodoro.tickToken)
             }
+            .fixedSize(horizontal: true, vertical: false)
             HStack(spacing: 12) {
                 controlButton(pomodoro.isRunning ? "pause.fill" : "play.fill") { pomodoro.startPause() }
                 controlButton("arrow.counterclockwise") { pomodoro.reset() }
