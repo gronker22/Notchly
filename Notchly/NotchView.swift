@@ -78,7 +78,21 @@ struct NotchView: View {
         self.state = state
         self.geometry = geometry
         _width = State(initialValue: geometry.collapsedWidth)
-        _height = State(initialValue: geometry.collapsedHeight)
+        _height = State(initialValue: geometry.collapsedIdleHeight)
+    }
+
+    /// Is there any collapsed content worth dropping the pill down for?
+    private var collapsedHasInfo: Bool {
+        pomodoro.isRunning
+            || network.showsTicker
+            || media.micActive
+            || media.cameraActive
+            || (sports.isSportsEnabled && sports.liveGames.contains { $0.state == .live })
+    }
+
+    /// Collapsed pill height: flush when idle, dropped a little when showing info.
+    private var collapsedTargetHeight: CGFloat {
+        collapsedHasInfo ? geometry.collapsedHeight : geometry.collapsedIdleHeight
     }
 
     // Spring for the open/close size morph.
@@ -149,6 +163,12 @@ struct NotchView: View {
         }
         .onChange(of: notifications.latest) { _, item in
             if let item { showBanner(item) }
+        }
+        // Drop the collapsed pill down only while there's info to show.
+        .onChange(of: collapsedHasInfo) { _, _ in
+            if !state.isExpanded && bannerItem == nil {
+                withAnimation(sizeSpring) { height = collapsedTargetHeight }
+            }
         }
         // PHASE 3: drive the imminent-event pulse loop.
         .onChange(of: calendar.isImminent) { _, imminent in
@@ -329,7 +349,9 @@ struct NotchView: View {
                 }
 
                 // Live sports score ticker (cycles when multiple games are live).
-                SportsTicker(sports: sports)
+                if sports.isSportsEnabled {
+                    SportsTicker(sports: sports)
+                }
 
                 Spacer(minLength: 0)
 
@@ -407,9 +429,11 @@ struct NotchView: View {
             .frame(width: 150)
         }
 
-            // Sports section (Live / Yesterday).
-            Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
-            SportsView(sports: sports)
+            // Sports section (Live / Yesterday) — only when enabled.
+            if sports.isSportsEnabled {
+                Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
+                SportsView(sports: sports)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.top, geometry.collapsedHeight + 8)
@@ -743,7 +767,7 @@ struct NotchView: View {
 
     private func animate(to expanded: Bool) {
         let targetW = expanded ? geometry.expandedWidth : geometry.collapsedWidth
-        let targetH = expanded ? expandedTargetHeight : geometry.collapsedHeight
+        let targetH = expanded ? expandedTargetHeight : collapsedTargetHeight
 
         withAnimation(sizeSpring) {
             width = targetW

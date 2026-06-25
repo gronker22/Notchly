@@ -102,6 +102,19 @@ final class SportsManager: ObservableObject {
     @Published private(set) var isPolling: Bool = false
     @Published private(set) var lastUpdated: Date?
 
+    /// Master on/off for the whole sports module.
+    @Published var isSportsEnabled: Bool {
+        didSet {
+            defaults.set(isSportsEnabled, forKey: Keys.enabled)
+            if isSportsEnabled {
+                Task { await refresh() }
+            } else {
+                liveGames = []
+                yesterdayResults = []
+            }
+        }
+    }
+
     @Published var followedTeams: [String] {
         didSet { defaults.set(followedTeams, forKey: Keys.followedTeams) }
     }
@@ -116,11 +129,13 @@ final class SportsManager: ObservableObject {
     private enum Keys {
         static let followedTeams = "notchly.followedTeams"
         static let enabledLeagues = "notchly.enabledLeagues"
+        static let enabled = "notchly.sports.enabled"
     }
 
     private var pollTask: Task<Void, Never>?
 
     init() {
+        isSportsEnabled = (defaults.object(forKey: Keys.enabled) as? Bool) ?? true
         followedTeams = defaults.stringArray(forKey: Keys.followedTeams) ?? []
         if let raw = defaults.array(forKey: Keys.enabledLeagues) as? [String], !raw.isEmpty {
             enabledLeagues = Set(raw.compactMap(League.init(rawValue:)))
@@ -152,6 +167,7 @@ final class SportsManager: ObservableObject {
 
     /// One full refresh cycle (live + yesterday).
     func refresh() async {
+        guard isSportsEnabled else { return }
         isPolling = true
         defer { isPolling = false }
         await fetchLive()

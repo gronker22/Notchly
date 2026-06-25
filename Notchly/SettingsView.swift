@@ -36,13 +36,23 @@ struct SettingsView: View {
 
     private var leaguesSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Leagues").font(.headline)
-            ForEach(League.allCases) { league in
-                Toggle(league.displayName, isOn: Binding(
-                    get: { sports.isEnabled(league) },
-                    set: { sports.setEnabled(league, $0) }
-                ))
-                .toggleStyle(.switch)
+            Toggle("Show sports", isOn: Binding(
+                get: { sports.isSportsEnabled },
+                set: { sports.isSportsEnabled = $0 }
+            ))
+            .toggleStyle(.switch)
+            .font(.headline)
+
+            if sports.isSportsEnabled {
+                Divider()
+                Text("Leagues").font(.subheadline).foregroundStyle(.secondary)
+                ForEach(League.allCases) { league in
+                    Toggle(league.displayName, isOn: Binding(
+                        get: { sports.isEnabled(league) },
+                        set: { sports.setEnabled(league, $0) }
+                    ))
+                    .toggleStyle(.switch)
+                }
             }
         }
     }

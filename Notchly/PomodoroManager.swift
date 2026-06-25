@@ -61,15 +61,28 @@ final class PomodoroManager: ObservableObject {
 
     private var currentDuration: TimeInterval { duration(for: phase) }
 
-    /// Adjust the current phase's length by ±minutes (only while not running).
+    /// Step the current phase's length up/down along the clean sequence
+    /// 1, 5, 10, 15, 20, … (only while not running). The sign of `delta` chooses
+    /// direction; the magnitude is ignored so it always snaps to round values.
     func adjustMinutes(by delta: Int) {
         guard !isRunning else { return }
+        let up = delta > 0
         switch phase {
-        case .work:       workMinutes = min(120, max(1, workMinutes + delta))
-        case .shortBreak: breakMinutes = min(60, max(1, breakMinutes + delta))
+        case .work:       workMinutes = min(120, stepped(workMinutes, up: up))
+        case .shortBreak: breakMinutes = min(60, stepped(breakMinutes, up: up))
         }
         elapsedBeforePause = 0   // restart the phase from its new length
         tickToken &+= 1
+    }
+
+    /// Next/previous value in the sequence 1, 5, 10, 15, 20, …
+    private func stepped(_ value: Int, up: Bool) -> Int {
+        if up {
+            return value < 5 ? 5 : (value / 5) * 5 + 5
+        } else {
+            if value <= 5 { return 1 }
+            return value % 5 == 0 ? value - 5 : (value / 5) * 5
+        }
     }
 
     // MARK: - Derived state

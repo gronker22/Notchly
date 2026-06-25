@@ -35,10 +35,13 @@ struct NotchGeometry {
 
     /// Collapsed bubble width (~200pt), at least as wide as the real notch.
     var collapsedWidth: CGFloat { max(200, notchWidth) }
-    /// Collapsed bubble height. We extend a small strip BELOW the physical notch
-    /// so collapsed content (e.g. the running Pomodoro countdown) renders on live
-    /// screen instead of being hidden in/behind the notch cutout.
+    /// Collapsed height when there IS content to show (timer, indicators): a strip
+    /// below the physical notch so that content renders on live screen.
     var collapsedHeight: CGFloat { max(36, notchHeight) + 16 }
+
+    /// Collapsed height when idle: flush with the notch so the pill doesn't hang
+    /// down over the window title of the app beneath it.
+    var collapsedIdleHeight: CGFloat { max(36, notchHeight) }
 
     /// The strip below the notch where collapsed content is drawn.
     var collapsedContentInset: CGFloat { max(36, notchHeight) }
