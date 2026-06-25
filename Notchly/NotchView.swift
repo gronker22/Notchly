@@ -16,10 +16,13 @@ import Combine
 /// NotchWindowController) flips `isExpanded`; SwiftUI animates off it.
 final class NotchState: ObservableObject {
     @Published var isExpanded: Bool = false
-    // PHASE 5: true while the bubble is dragged off the notch as a floating HUD.
-    @Published var isDetached: Bool = false
 
-    // PHASE 6: drag-to-dock state.
+    /// Current visible height of the expanded bubble, so the controller's hover
+    /// logic only keeps it open while the cursor is over the actual bubble (not
+    /// the empty area below it inside the fixed panel frame).
+    @Published var bubbleHeight: CGFloat = 0
+
+    // Drag-to-dock state.
     enum DropHalf { case left, right }
     @Published var isDragTargeting: Bool = false   // a drag is hovering the island
     @Published var dragHalf: DropHalf? = nil        // which zone is highlighted
@@ -37,9 +40,8 @@ struct NotchView: View {
     @ObservedObject var state: NotchState
     let geometry: NotchGeometry
 
-    // PHASE 2: media + audio modules
+    // Now Playing
     @StateObject private var nowPlaying = NowPlayingManager()
-    @StateObject private var audio = AudioLevelProvider()
 
     // PHASE 3: productivity modules
     @StateObject private var pomodoro = PomodoroManager()
@@ -50,10 +52,12 @@ struct NotchView: View {
     @StateObject private var network = NetworkMonitor()
     @StateObject private var clipboard = ClipboardManager()
 
+    // Live sports
+    @StateObject private var sports = SportsManager()
+
     // Spring-driven, path-level animation parameters.
     @State private var width: CGFloat
     @State private var height: CGFloat
-    @State private var bottomLag: CGFloat = 0
 
     // PHASE 3: drives the imminent-event glow pulse.
     @State private var pulse = false
@@ -72,19 +76,14 @@ struct NotchView: View {
         _height = State(initialValue: geometry.collapsedHeight)
     }
 
-    // Phase 1 spec spring for size.
+    // Spring for the open/close size morph.
     private var sizeSpring: Animation {
-        .interpolatingSpring(stiffness: 180, damping: 16)
-    }
-
-    // Softer spring for the bottom lag → it visually trails the size change.
-    private var lagSpring: Animation {
-        .interpolatingSpring(stiffness: 110, damping: 12)
+        .spring(response: 0.4, dampingFraction: 0.7)
     }
 
     var body: some View {
         ZStack(alignment: .top) {
-            // PHASE 5: single blob, or two split pills, + detached drop shadow.
+            // Single blob, or two split pills.
             bubbleBackground
 
             // Collapsed presentation: split pair, or the normal single overlay.
@@ -114,22 +113,27 @@ struct NotchView: View {
         }
         .onPreferenceChange(ExpandedHeightKey.self) { h in
             measuredContentHeight = h
+            // Publish the real bubble height so the controller's hover hit-test
+            // matches the visible bubble.
+            state.bubbleHeight = expandedTargetHeight
             // If already open, grow/shrink the bubble to match new content
             // (e.g. clipboard items added, track row appearing).
             if state.isExpanded {
-                withAnimation(sizeSpring) { height = expandedTargetHeight }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) {
+                    height = expandedTargetHeight
+                }
             }
         }
         .onAppear {
-            // PHASE 2: start media + audio sources.
             nowPlaying.start()
-            audio.start()
             // PHASE 3: start calendar (Pomodoro starts on user action).
             calendar.start()
             // PHASE 4: start system-awareness + clipboard.
             media.start()
             network.start()
             clipboard.start()
+            // Live sports polling.
+            sports.start()
         }
         // PHASE 3: drive the imminent-event pulse loop.
         .onChange(of: calendar.isImminent) { _, imminent in
@@ -149,11 +153,11 @@ struct NotchView: View {
         }
     }
 
-    // MARK: - PHASE 5: bubble background (single / split / shadow)
+    // MARK: - Bubble background (single / split)
 
-    /// Split only happens while collapsed & attached.
+    /// Split only happens while collapsed.
     private var isSplitCondition: Bool { pomodoro.isRunning && calendar.isImminent }
-    private var showSplit: Bool { isSplitCondition && !state.isExpanded && !state.isDetached }
+    private var showSplit: Bool { isSplitCondition && !state.isExpanded }
 
     private var splitPillWidth: CGFloat { geometry.collapsedWidth * 0.46 }
     private var splitDX: CGFloat { splitProgress * geometry.collapsedWidth * 0.30 }
@@ -172,17 +176,10 @@ struct NotchView: View {
                 }
                 .frame(width: geometry.expandedWidth, height: geometry.expandedHeight, alignment: .top)
             } else {
-                NotchShape(width: width, height: height, bottomLag: bottomLag)
+                NotchShape(width: width, height: height)
                     .fill(Color.black)               // pure #000000 to blend with the notch
             }
         }
-        // PHASE 5: subtle drop shadow only while floating off the notch.
-        .shadow(
-            color: .black.opacity(state.isDetached ? 0.45 : 0),
-            radius: state.isDetached ? 22 : 0,
-            x: 0, y: state.isDetached ? 12 : 0
-        )
-        .animation(.easeInOut(duration: 0.3), value: state.isDetached)
     }
 
     // MARK: - PHASE 6: drag-to-dock zones
@@ -279,9 +276,6 @@ struct NotchView: View {
                 .blur(radius: 9)
                 .opacity(calendar.isImminent ? (pulse ? 0.55 : 0.0) : 0)
 
-            // PHASE 2: waveform sits within the 36pt notch height.
-            WaveformView(levels: audio.levels, maxBarHeight: 22)
-
             // PHASE 3: Pomodoro progress ring wrapping the pill's outer edge.
             // Drawn in a Canvas and re-rendered each frame by TimelineView so the
             // arc sweeps smoothly (continuous progress) rather than stepping once
@@ -303,10 +297,10 @@ struct NotchView: View {
 
             // Leading (Pomodoro time + network ticker) / trailing (media dots).
             HStack(spacing: 6) {
-                // PHASE 3: tiny remaining-time label when the timer is running.
+                // Remaining-time countdown, visible in the collapsed notch.
                 if pomodoro.isRunning {
                     Text(pomodoro.remainingString)
-                        .font(.system(size: 10, weight: .semibold, design: .rounded).monospacedDigit())
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundStyle(.white)
                         .id(pomodoro.tickToken)   // refresh each second
                 }
@@ -318,6 +312,9 @@ struct NotchView: View {
                         .foregroundStyle(.white.opacity(0.85))
                         .transition(.opacity)
                 }
+
+                // Live sports score ticker (cycles when multiple games are live).
+                SportsTicker(sports: sports)
 
                 Spacer(minLength: 0)
 
@@ -339,59 +336,61 @@ struct NotchView: View {
 
     @ViewBuilder
     private var expandedContent: some View {
-        VStack(spacing: 12) {
-            // PHASE 2: Now Playing (album art + metadata + transport controls)
-            HStack(spacing: 12) {
+        VStack(alignment: .leading, spacing: 12) {
+        HStack(alignment: .top, spacing: 16) {
+            // LEFT column: Pomodoro, Calendar, Network, Clipboard.
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(alignment: .center, spacing: 14) {
+                    pomodoroControls
+                    Rectangle()
+                        .fill(.white.opacity(0.12))
+                        .frame(width: 1, height: 30)
+                    calendarRow
+                    Spacer(minLength: 0)
+                }
+
+                HStack(alignment: .center, spacing: 12) {
+                    Label(network.fullString, systemImage: "dot.radiowaves.up.forward")
+                        .font(.system(.caption2, design: .rounded).weight(.medium).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.75))
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                    Spacer(minLength: 0)
+                    mediaAccessRow
+                }
+
+                clipboardList
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // RIGHT column: Now Playing — album art on top, then title/artist
+            // and the transport controls beneath it.
+            VStack(alignment: .center, spacing: 8) {
                 artworkView
 
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(spacing: 2) {
                     Text(nowPlaying.title)
-                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .font(.system(.caption, design: .rounded).weight(.semibold))
                         .foregroundStyle(.white)
-                        .lineLimit(1)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
                     if !nowPlaying.artist.isEmpty {
                         Text(nowPlaying.artist)
-                            .font(.system(.caption, design: .rounded))
+                            .font(.system(.caption2, design: .rounded))
                             .foregroundStyle(.white.opacity(0.6))
                             .lineLimit(1)
+                            .multilineTextAlignment(.center)
                     }
                 }
 
-                Spacer(minLength: 8)
-
                 transportControls
             }
+            .frame(width: 150)
+        }
 
-            // PHASE 2: larger waveform inside the expanded island.
-            WaveformView(levels: audio.levels, maxBarHeight: 28)
-
-            // PHASE 3: Pomodoro controls + Calendar event row.
-            HStack(alignment: .center, spacing: 14) {
-                pomodoroControls
-                Rectangle()
-                    .fill(.white.opacity(0.12))
-                    .frame(width: 1, height: 30)
-                calendarRow
-                Spacer(minLength: 0)
-            }
-
-            // PHASE 4: Network speed + Mic/camera in-use row.
-            HStack(alignment: .center, spacing: 12) {
-                Label(network.fullString, systemImage: "dot.radiowaves.up.forward")
-                    .font(.system(.caption2, design: .rounded).weight(.medium).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.75))
-                    .labelStyle(.titleAndIcon)
-                    .lineLimit(1)
-
-                Spacer(minLength: 0)
-
-                mediaAccessRow
-            }
-
-            // PHASE 4: Clipboard history (last 5, tap to copy back).
-            clipboardList
-
-            // PHASE 5: drag-to-detach handle slot here.
+            // Sports section (Live / Yesterday).
+            Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
+            SportsView(sports: sports)
         }
         .padding(.horizontal, 18)
         .padding(.top, geometry.collapsedHeight + 8)
@@ -417,7 +416,7 @@ struct NotchView: View {
                     .resizable()
                     .aspectRatio(contentMode: .fill)
             } else {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(.white.opacity(0.12))
                     .overlay(
                         Image(systemName: "music.note")
@@ -425,8 +424,8 @@ struct NotchView: View {
                     )
             }
         }
-        .frame(width: 40, height: 40)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .frame(width: 76, height: 76)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 
     @ViewBuilder
@@ -469,6 +468,15 @@ struct NotchView: View {
             HStack(spacing: 12) {
                 controlButton(pomodoro.isRunning ? "pause.fill" : "play.fill") { pomodoro.startPause() }
                 controlButton("arrow.counterclockwise") { pomodoro.reset() }
+
+                // Adjust the current phase length (only while paused/idle).
+                if !pomodoro.isRunning {
+                    HStack(spacing: 6) {
+                        controlButton("minus") { pomodoro.adjustMinutes(by: -5) }
+                        controlButton("plus") { pomodoro.adjustMinutes(by: 5) }
+                    }
+                    .opacity(0.8)
+                }
             }
         }
     }
@@ -634,14 +642,9 @@ struct NotchView: View {
         let targetW = expanded ? geometry.expandedWidth : geometry.collapsedWidth
         let targetH = expanded ? expandedTargetHeight : geometry.collapsedHeight
 
-        // Size morph (primary spring).
         withAnimation(sizeSpring) {
             width = targetW
             height = targetH
-        }
-        // Bottom lag on a separate, softer spring so the bottom edge trails.
-        withAnimation(lagSpring) {
-            bottomLag = expanded ? 1 : 0
         }
     }
 }

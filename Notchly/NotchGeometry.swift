@@ -42,10 +42,9 @@ struct NotchGeometry {
 
     /// Expanded bubble width (~480pt).
     let expandedWidth: CGFloat = 480
-    /// Expanded bubble height, measured from the top of the screen down.
-    /// Phase 1 ~180 → Phase 3 (220, productivity row) → Phase 4 (360, network +
-    /// media-access + clipboard history).
-    let expandedHeight: CGFloat = 360
+    /// Maximum expanded bubble height (the panel container). The bubble itself
+    /// sizes to its content up to this cap. Raised to fit the sports section.
+    let expandedHeight: CGFloat = 520
 
     // MARK: - Construction
 

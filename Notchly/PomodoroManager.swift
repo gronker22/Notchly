@@ -1,14 +1,15 @@
 //
 //  PomodoroManager.swift
-//  Notchly — Phase 3: Pomodoro timer
+//  Notchly — Pomodoro timer
 //
-//  25 min work / 5 min break cycle. Start / pause / reset. Publishes the
-//  fractional progress (0...1) for the collapsed ring overlay and a "MM:SS"
-//  string for the tiny in-pill label.
+//  Adjustable work / break durations. Start / pause / reset. Publishes the
+//  fractional progress (0...1) for the collapsed ring and a "MM:SS" string for
+//  the in-pill label. Fires a local notification when a phase hits 0.
 //
 
 import Foundation
 import Combine
+import UserNotifications
 
 @MainActor
 final class PomodoroManager: ObservableObject {
@@ -16,46 +17,76 @@ final class PomodoroManager: ObservableObject {
     enum Phase {
         case work
         case shortBreak
-
-        var duration: TimeInterval {
-            switch self {
-            case .work: return 25 * 60
-            case .shortBreak: return 5 * 60
-            }
-        }
+        var title: String { self == .work ? "Focus" : "Break" }
     }
 
     @Published private(set) var phase: Phase = .work
     @Published private(set) var isRunning: Bool = false
-    /// Bumped every second so the "MM:SS" label refreshes. The ring reads the
-    /// continuous `progress` getter (via TimelineView) for sub-second smoothness.
     @Published private(set) var tickToken: Int = 0
 
-    private var timer: Timer?
-
-    // Continuous-clock bookkeeping so progress is smooth, not stepped.
-    private var elapsedBeforePause: TimeInterval = 0
-    private var runStart: Date?
-
-    // MARK: - Derived state (read by the UI)
-
-    /// Total elapsed in the current phase, computed live.
-    private var elapsed: TimeInterval {
-        let running = isRunning ? Date().timeIntervalSince(runStart ?? Date()) : 0
-        return min(phase.duration, elapsedBeforePause + running)
+    /// Adjustable durations (minutes), persisted.
+    @Published private(set) var workMinutes: Int {
+        didSet { defaults.set(workMinutes, forKey: Keys.work) }
+    }
+    @Published private(set) var breakMinutes: Int {
+        didSet { defaults.set(breakMinutes, forKey: Keys.breakKey) }
     }
 
-    /// Seconds left in the current phase.
-    var remaining: TimeInterval { max(0, phase.duration - elapsed) }
+    private let defaults = UserDefaults.standard
+    private enum Keys {
+        static let work = "notchly.pomodoro.work"
+        static let breakKey = "notchly.pomodoro.break"
+    }
 
-    /// 0 at the start of a phase → 1 when it completes. Drives the ring.
+    private var timer: Timer?
+    private var elapsedBeforePause: TimeInterval = 0
+    private var runStart: Date?
+    private var notificationsRequested = false
+
+    init() {
+        let w = defaults.integer(forKey: Keys.work)
+        let b = defaults.integer(forKey: Keys.breakKey)
+        workMinutes = w > 0 ? w : 25
+        breakMinutes = b > 0 ? b : 5
+    }
+
+    // MARK: - Durations
+
+    private func duration(for phase: Phase) -> TimeInterval {
+        switch phase {
+        case .work:       return TimeInterval(workMinutes) * 60
+        case .shortBreak: return TimeInterval(breakMinutes) * 60
+        }
+    }
+
+    private var currentDuration: TimeInterval { duration(for: phase) }
+
+    /// Adjust the current phase's length by ±minutes (only while not running).
+    func adjustMinutes(by delta: Int) {
+        guard !isRunning else { return }
+        switch phase {
+        case .work:       workMinutes = min(120, max(1, workMinutes + delta))
+        case .shortBreak: breakMinutes = min(60, max(1, breakMinutes + delta))
+        }
+        elapsedBeforePause = 0   // restart the phase from its new length
+        tickToken &+= 1
+    }
+
+    // MARK: - Derived state
+
+    private var elapsed: TimeInterval {
+        let running = isRunning ? Date().timeIntervalSince(runStart ?? Date()) : 0
+        return min(currentDuration, elapsedBeforePause + running)
+    }
+
+    var remaining: TimeInterval { max(0, currentDuration - elapsed) }
+
     var progress: Double {
-        let total = phase.duration
+        let total = currentDuration
         guard total > 0 else { return 0 }
         return min(1, max(0, elapsed / total))
     }
 
-    /// "18:42" — only meant to be shown while running.
     var remainingString: String {
         let secs = max(0, Int(remaining.rounded()))
         return String(format: "%d:%02d", secs / 60, secs % 60)
@@ -63,18 +94,16 @@ final class PomodoroManager: ObservableObject {
 
     // MARK: - Controls
 
-    func startPause() {
-        isRunning ? pause() : start()
-    }
+    func startPause() { isRunning ? pause() : start() }
 
     func start() {
         guard !isRunning else { return }
+        requestNotificationsIfNeeded()
         isRunning = true
         runStart = Date()
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
-        // .common keeps it firing while the user interacts with menus/UI.
         RunLoop.main.add(t, forMode: .common)
         timer = t
     }
@@ -94,19 +123,48 @@ final class PomodoroManager: ObservableObject {
         elapsedBeforePause = 0
     }
 
-    // MARK: - Tick (phase rollover + label refresh)
+    // MARK: - Tick
 
     private func tick() {
         if remaining <= 0 {
             advancePhase()
         }
-        tickToken &+= 1   // nudges SwiftUI to refresh the "MM:SS" label
+        tickToken &+= 1
     }
 
     private func advancePhase() {
-        // Auto-roll into the next phase and keep running (classic Pomodoro feel).
+        // Notify about the phase that just finished, then roll into the next.
+        notifyCompletion(of: phase)
         phase = (phase == .work) ? .shortBreak : .work
         elapsedBeforePause = 0
         runStart = Date()
+    }
+
+    // MARK: - Notifications
+
+    private func requestNotificationsIfNeeded() {
+        guard !notificationsRequested else { return }
+        notificationsRequested = true
+        UNUserNotificationCenter.current()
+            .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+    }
+
+    private func notifyCompletion(of finished: Phase) {
+        let content = UNMutableNotificationContent()
+        if finished == .work {
+            content.title = "Focus session complete"
+            content.body = "Time for a \(breakMinutes)-minute break."
+        } else {
+            content.title = "Break over"
+            content.body = "Back to a \(workMinutes)-minute focus session."
+        }
+        content.sound = .default
+
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString,
+            content: content,
+            trigger: nil   // deliver immediately
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 }
