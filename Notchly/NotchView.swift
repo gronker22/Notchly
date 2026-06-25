@@ -434,6 +434,11 @@ struct NotchView: View {
                 Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
                 SportsView(sports: sports)
             }
+
+            // Always-visible footer: settings + the sports on/off switch, so
+            // sports can be re-enabled even when its section is hidden.
+            Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
+            panelFooter
         }
         .padding(.horizontal, 18)
         .padding(.top, geometry.collapsedHeight + 8)
@@ -684,6 +689,35 @@ struct NotchView: View {
     private var expandedTargetHeight: CGFloat {
         let h = measuredContentHeight > 0 ? measuredContentHeight : geometry.expandedHeight
         return min(geometry.expandedHeight, max(geometry.collapsedHeight, h))
+    }
+
+    // MARK: - Panel footer (settings + sports switch)
+
+    private var panelFooter: some View {
+        HStack(spacing: 10) {
+            Button {
+                SettingsWindowPresenter.show(sports: sports)
+            } label: {
+                Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            Spacer(minLength: 0)
+
+            Text("Sports")
+                .font(.system(size: 10, weight: .medium, design: .rounded))
+                .foregroundStyle(.white.opacity(0.5))
+            Toggle("", isOn: Binding(
+                get: { sports.isSportsEnabled },
+                set: { sports.isSportsEnabled = $0 }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .controlSize(.mini)
+            .tint(.green)
+        }
     }
 
     // MARK: - Incoming notification banner

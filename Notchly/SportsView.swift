@@ -54,16 +54,6 @@ struct SportsView: View {
 
             tabPill("Live", isOn: tab == .live) { tab = .live }
             tabPill("Yesterday", isOn: tab == .yesterday) { tab = .yesterday }
-
-            // Settings access (gear) — opens the Notchly settings window.
-            Button {
-                SettingsWindowPresenter.show(sports: sports)
-            } label: {
-                Image(systemName: "gearshape.fill")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .buttonStyle(.plain)
         }
     }
 
