@@ -55,11 +55,16 @@ final class BlackjackGame: ObservableObject {
     @Published private(set) var bet: Int = 25
     @Published private(set) var message: String = "Place your bet"
     @Published private(set) var outcome: Outcome = .none
+    @Published var bonusAvailable = false
+
+    func awardBonus(_ amount: Int) { chips += amount }
+    func clearBonus() { bonusAvailable = false }
 
     // Settings
     @Published var deckCount: Int { didSet { defaults.set(deckCount, forKey: K.decks); buildDeck() } }
     @Published var dealerHitsSoft17: Bool { didSet { defaults.set(dealerHitsSoft17, forKey: K.h17) } }
     @Published var showCount: Bool { didSet { defaults.set(showCount, forKey: K.showCount) } }
+    @Published var showHint: Bool { didSet { defaults.set(showHint, forKey: K.hint) } }
 
     // Counting
     @Published private(set) var runningCount = 0
@@ -84,6 +89,7 @@ final class BlackjackGame: ObservableObject {
     private enum K {
         static let chips = "notchly.bj.chips", high = "notchly.bj.high"
         static let decks = "notchly.bj.decks", h17 = "notchly.bj.h17", showCount = "notchly.bj.showcount"
+        static let hint = "notchly.bj.hint"
         static let hands = "notchly.bj.hands", wins = "notchly.bj.wins", losses = "notchly.bj.losses"
         static let pushes = "notchly.bj.pushes", bigWin = "notchly.bj.bigwin", bigLoss = "notchly.bj.bigloss"
         static let streak = "notchly.bj.streak"
@@ -98,6 +104,7 @@ final class BlackjackGame: ObservableObject {
         deckCount = [1, 2, 4, 6, 8].contains(d) ? d : 6
         dealerHitsSoft17 = defaults.bool(forKey: K.h17)
         showCount = defaults.bool(forKey: K.showCount)
+        showHint = defaults.bool(forKey: K.hint)
         handsPlayed = defaults.integer(forKey: K.hands)
         wins = defaults.integer(forKey: K.wins)
         losses = defaults.integer(forKey: K.losses)
@@ -115,6 +122,16 @@ final class BlackjackGame: ObservableObject {
     var dealerVisibleValue: Int { dealerHoleHidden ? value(Array(dealer.dropFirst())) : value(dealer) }
     var canDouble: Bool { phase == .playerTurn && player.count == 2 && !doubled && chips >= bet }
     var canSurrender: Bool { phase == .playerTurn && player.count == 2 && !actedThisHand }
+
+    /// Optimal move per basic strategy for the current situation (nil off-turn).
+    var recommendedAction: BasicStrategy.Action? {
+        guard phase == .playerTurn, player.count >= 2, dealer.count >= 2 else { return nil }
+        return BasicStrategy.recommend(
+            total: value(player), isSoft: isSoft(player),
+            dealerUp: dealer[1].value,               // 11 for an ace
+            canDouble: canDouble, canSurrender: canSurrender
+        )
+    }
     var winRate: Double { handsPlayed == 0 ? 0 : Double(wins) / Double(handsPlayed) }
 
     // MARK: - Deck / counting
@@ -312,6 +329,7 @@ final class BlackjackGame: ObservableObject {
             message = msg
             outcome = delta > 0 ? .win : (delta < 0 ? .lose : .push)
         }
+        if delta > 0 { bonusAvailable = true }      // earn a bonus slot spin
 
         handsPlayed += 1
         if delta > 0 {
@@ -349,5 +367,69 @@ final class BlackjackGame: ObservableObject {
         chips = 500; bet = 25; phase = .betting
         player = []; dealer = []
         message = "New game — place your bet"; outcome = .none
+    }
+}
+
+// MARK: - Basic Strategy (4-8 deck, dealer stands on soft 17)
+
+/// The standard optimal-play chart used by every reputable blackjack reference.
+/// Split isn't offered in this game, so pair advice falls through to the hand's
+/// total. `dealerUp` is the up card's value (Ace = 11).
+enum BasicStrategy {
+    enum Action { case hit, stand, double, surrender
+        var label: String {
+            switch self { case .hit: return "HIT"; case .stand: return "STAND"
+            case .double: return "DOUBLE"; case .surrender: return "SURRENDER" }
+        }
+    }
+
+    static func recommend(total: Int, isSoft: Bool, dealerUp d: Int,
+                          canDouble: Bool, canSurrender: Bool) -> Action {
+        // Late surrender first (hard totals only).
+        if canSurrender && !isSoft {
+            if total == 16 && (d == 9 || d == 10 || d == 11) { return .surrender }
+            if total == 15 && d == 10 { return .surrender }
+        }
+
+        if isSoft {
+            let ideal = softAction(total: total, d: d)
+            return resolve(ideal, canDouble: canDouble, soft: true, total: total, d: d)
+        } else {
+            let ideal = hardAction(total: total, d: d)
+            return resolve(ideal, canDouble: canDouble, soft: false, total: total, d: d)
+        }
+    }
+
+    private static func hardAction(total: Int, d: Int) -> Action {
+        switch total {
+        case ...8:  return .hit
+        case 9:     return (3...6).contains(d) ? .double : .hit
+        case 10:    return (2...9).contains(d) ? .double : .hit
+        case 11:    return d == 11 ? .hit : .double
+        case 12:    return (4...6).contains(d) ? .stand : .hit
+        case 13, 14, 15, 16: return (2...6).contains(d) ? .stand : .hit
+        default:    return .stand                       // 17+
+        }
+    }
+
+    private static func softAction(total: Int, d: Int) -> Action {
+        switch total {
+        case 13, 14: return (5...6).contains(d) ? .double : .hit    // A2, A3
+        case 15, 16: return (4...6).contains(d) ? .double : .hit    // A4, A5
+        case 17:     return (3...6).contains(d) ? .double : .hit    // A6
+        case 18:                                                    // A7
+            if (3...6).contains(d) { return .double }
+            if d == 2 || d == 7 || d == 8 { return .stand }
+            return .hit                                             // 9,10,A
+        default:     return .stand                                 // A8+, soft 19/20
+        }
+    }
+
+    /// Fall back sensibly when doubling isn't allowed.
+    private static func resolve(_ a: Action, canDouble: Bool, soft: Bool, total: Int, d: Int) -> Action {
+        guard a == .double, !canDouble else { return a }
+        // Can't double: a "double" cell becomes stand for soft 18, else hit.
+        if soft && total == 18 { return .stand }
+        return .hit
     }
 }

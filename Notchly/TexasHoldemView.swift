@@ -13,60 +13,96 @@ struct TexasHoldemView: View {
     @ObservedObject var game: TexasHoldemGame
     @State private var raiseAmount: Double = 0
     @State private var showPanel = false
+    @State private var showSlot = false
 
     var body: some View {
         VStack(spacing: 10) {
-            // AI opponents (4, in two rows)
-            VStack(spacing: 6) {
-                HStack(alignment: .top, spacing: 24) {
-                    seat(game.players[1], compact: true)
-                    seat(game.players[2], compact: true)
-                }
-                HStack(alignment: .top, spacing: 24) {
-                    seat(game.players[3], compact: true)
-                    seat(game.players[4], compact: true)
-                }
-            }
-            .padding(.top, 4)
+            topBar
 
-            // Pot + community
-            VStack(spacing: 8) {
-                Text("POT \(game.pot)")
-                    .font(.system(.headline, design: .rounded).weight(.bold))
-                    .foregroundStyle(.yellow)
-                    .contentTransition(.numericText())
-                    .animation(.spring(response: 0.4), value: game.pot)
+            // AI opponents across the top (landscape row).
+            HStack(alignment: .top, spacing: 14) {
+                ForEach(1...4, id: \.self) { seat(game.players[$0], compact: true) }
+            }
+
+            Spacer(minLength: 4)
+
+            // Centre: pot + community cards.
+            VStack(spacing: 10) {
+                HStack(spacing: 8) {
+                    if game.pot > 0 { PokerChip(amount: game.pot, size: 26) }
+                    Text("POT \(game.pot)")
+                        .font(.system(.title3, design: .rounded).weight(.bold))
+                        .foregroundStyle(.yellow)
+                        .contentTransition(.numericText())
+                        .animation(.spring(response: 0.4), value: game.pot)
+                }
                 communityRow
             }
-            .padding(.vertical, 6)
 
-            // Live stats overlay (win %, hand strength, pot odds)
-            if game.isBetting && !game.players[0].folded {
-                liveHUD
+            Spacer(minLength: 4)
+
+            // Bottom: you + HUD on the left, message + actions on the right.
+            HStack(alignment: .bottom, spacing: 20) {
+                VStack(spacing: 8) {
+                    if game.isBetting && !game.players[0].folded { liveHUD.frame(width: 300) }
+                    seat(game.players[0])
+                }
+                Spacer(minLength: 0)
+                VStack(spacing: 8) {
+                    Text(game.resultText.isEmpty ? game.message : game.resultText)
+                        .font(.system(.subheadline, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                    if game.bonusAvailable {
+                        Button { showSlot = true } label: {
+                            Label("Bonus Spin", systemImage: "dice.fill")
+                                .font(.system(.subheadline, design: .rounded).weight(.bold))
+                                .foregroundStyle(.black)
+                                .padding(.horizontal, 14).padding(.vertical, 6)
+                                .background(Capsule().fill(.yellow))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    actions
+                }
+                .frame(width: 330)
             }
-
-            Rectangle().fill(.white.opacity(0.1)).frame(height: 1)
-
-            // You
-            seat(game.players[0])
-
-            // Message / result
-            Text(game.resultText.isEmpty ? game.message : game.resultText)
-                .font(.system(.caption, design: .rounded).weight(.semibold))
-                .foregroundStyle(.white.opacity(0.85))
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .lineLimit(2)
-
-            actions
 
             settingsPanel
         }
-        .padding(16)
-        .frame(width: 460, height: 760)
-        .background(feltBackground)
+        .padding(18)
+        .frame(width: 940, height: 560)
+        .background(FeltBackground())
         .onChange(of: game.isYourTurn) { _, yours in
             if yours { raiseAmount = Double(game.minRaiseTo) }
+        }
+        .sheet(isPresented: $showSlot) {
+            SlotMachineView(onReward: { game.awardBonus($0) },
+                            onClose: { showSlot = false; game.clearBonus() })
+        }
+    }
+
+    private var topBar: some View {
+        HStack(spacing: 10) {
+            Label("\(game.players[0].chips)", systemImage: "dollarsign.circle.fill")
+                .font(.system(.headline, design: .rounded).weight(.bold))
+                .foregroundStyle(.yellow)
+            Spacer()
+            Text("Texas Hold'em")
+                .font(.system(.subheadline, design: .rounded).weight(.heavy))
+                .foregroundStyle(.white.opacity(0.5))
+            Spacer()
+            // AI coach on/off
+            Button {
+                game.toggleCoach()
+            } label: {
+                Label(game.coachOn ? "Coach: On" : "Coach: Off",
+                      systemImage: game.coachOn ? "lightbulb.fill" : "lightbulb.slash")
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+                    .foregroundStyle(game.coachOn ? .yellow : .white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
         }
     }
 
@@ -129,11 +165,9 @@ struct TexasHoldemView: View {
         let isWinner = game.winnerSeats.contains(p.id)
         return VStack(spacing: 4) {
             // Position marker (D / SB / BB) + avatar + name
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 positionTag(p)
-                Image(systemName: p.avatar)
-                    .font(.system(size: 13))
-                    .foregroundStyle(game.current == p.id ? .yellow : .white.opacity(0.85))
+                AvatarBadge(symbol: p.avatar, color: avatarColor(p.id), active: game.current == p.id)
                 Text(p.name)
                     .font(.system(.caption, design: .rounded).weight(.bold))
                     .foregroundStyle(game.current == p.id ? .yellow : .white)
@@ -258,6 +292,16 @@ struct TexasHoldemView: View {
     private var actions: some View {
         if game.isYourTurn {
             VStack(spacing: 8) {
+                if let advice = game.coachAdvice {
+                    HStack(spacing: 6) {
+                        Image(systemName: "lightbulb.fill").font(.system(size: 10))
+                        Text("Coach: \(advice)")
+                            .font(.system(.caption, design: .rounded).weight(.bold))
+                    }
+                    .foregroundStyle(.yellow)
+                    .padding(.horizontal, 10).padding(.vertical, 3)
+                    .background(Capsule().fill(.yellow.opacity(0.15)))
+                }
                 if game.maxRaiseTo > game.minRaiseTo {
                     HStack(spacing: 8) {
                         Text("Raise \(Int(raiseAmount))")
@@ -349,6 +393,40 @@ struct TexasHoldemView: View {
 
 // MARK: - Thinking progress bar
 
+// MARK: - Avatar
+
+extension TexasHoldemView {
+    func avatarColor(_ id: Int) -> Color {
+        switch id {
+        case 0:  return Color(red: 0.20, green: 0.55, blue: 0.95)   // you – blue
+        case 1:  return Color(red: 0.55, green: 0.35, blue: 0.90)   // Ava – purple
+        case 2:  return Color(red: 0.90, green: 0.35, blue: 0.20)   // Rex – orange/red
+        case 3:  return Color(red: 0.90, green: 0.30, blue: 0.55)   // Mia – pink
+        default: return Color(red: 0.20, green: 0.65, blue: 0.55)   // Leo – teal
+        }
+    }
+}
+
+struct AvatarBadge: View {
+    let symbol: String
+    let color: Color
+    let active: Bool
+    var body: some View {
+        ZStack {
+            Circle().fill(
+                LinearGradient(colors: [color.opacity(0.95), color.opacity(0.45)],
+                               startPoint: .topLeading, endPoint: .bottomTrailing))
+            Circle().strokeBorder(active ? Color.yellow : .white.opacity(0.55),
+                                  lineWidth: active ? 2 : 1)
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 26, height: 26)
+        .shadow(color: active ? color.opacity(0.7) : .black.opacity(0.4), radius: active ? 5 : 2, y: 1)
+    }
+}
+
 struct ThinkingBar: View {
     @State private var progress: CGFloat = 0
     var body: some View {
@@ -399,16 +477,9 @@ enum HoldemWindowPresenter {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 760),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        w.title = "Texas Hold'em"
-        w.isReleasedWhenClosed = false
-        w.contentView = NSHostingView(rootView: TexasHoldemView(game: game))
-        w.center()
+        let w = GameWindow.make(title: "Texas Hold'em", design: CGSize(width: 940, height: 560)) {
+            TexasHoldemView(game: game)
+        }
         window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

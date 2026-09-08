@@ -48,6 +48,21 @@ final class TexasHoldemGame: ObservableObject {
 
     @Published var difficulty: Difficulty { didSet { defaults.set(difficulty.rawValue, forKey: K.diff) } }
     @Published var soundOn: Bool { didSet { defaults.set(soundOn, forKey: K.sound) } }
+    @Published var coachOn: Bool { didSet { defaults.set(coachOn, forKey: K.coach) } }
+
+    func toggleCoach() { coachOn.toggle() }
+
+    /// Suggested action for the human, equity vs pot odds (same logic the AI uses).
+    var coachAdvice: String? {
+        guard coachOn, isYourTurn else { return nil }
+        let eq = winProbability, odds = potOddsForYou
+        if toCallForYou == 0 {
+            return eq > 0.62 ? "Bet / Raise" : "Check"
+        }
+        if eq > 0.75 { return "Raise (strong)" }
+        if eq >= odds { return "Call — right price" }
+        return "Fold"
+    }
 
     // Session stats
     @Published private(set) var wins = 0
@@ -58,6 +73,10 @@ final class TexasHoldemGame: ObservableObject {
     // Live overlay + highlights
     @Published private(set) var winProbability: Double = 0   // your equity, 0...1
     @Published private(set) var winnerSeats: Set<Int> = []
+    @Published var bonusAvailable = false
+
+    func awardBonus(_ amount: Int) { players[0].chips += amount; persist() }
+    func clearBonus() { bonusAvailable = false }
 
     let smallBlind = 10, bigBlind = 20, startingStack = 1000
     private var minRaise = 20
@@ -69,6 +88,7 @@ final class TexasHoldemGame: ObservableObject {
         static let chips = "notchly.holdem.chips", diff = "notchly.holdem.diff"
         static let sound = "notchly.holdem.sound", wins = "notchly.holdem.wins"
         static let losses = "notchly.holdem.losses", bigPot = "notchly.holdem.bigpot"
+        static let coach = "notchly.holdem.coach"
     }
 
     init() {
@@ -83,6 +103,7 @@ final class TexasHoldemGame: ObservableObject {
         ]
         difficulty = Difficulty(rawValue: defaults.string(forKey: K.diff) ?? "easy") ?? .easy
         soundOn = defaults.object(forKey: K.sound) as? Bool ?? true
+        coachOn = defaults.object(forKey: K.coach) as? Bool ?? false
         wins = defaults.integer(forKey: K.wins)
         losses = defaults.integer(forKey: K.losses)
         biggestPot = defaults.integer(forKey: K.bigPot)
@@ -104,17 +125,22 @@ final class TexasHoldemGame: ObservableObject {
     func computeEquity() {
         guard !players[0].folded, players[0].hole.count == 2 else { winProbability = 0; return }
         let opponents = players.indices.filter { $0 != 0 && !players[$0].folded }.count
-        guard opponents > 0 else { winProbability = 1; return }
+        winProbability = equity(for: players[0].hole, opponents: opponents, trials: 320)
+    }
 
-        let known = Set((players[0].hole + community).map { $0.rank * 10 + suitIndex($0.suit) })
+    /// Monte-Carlo win probability for any hole against `opponents` random hands
+    /// on the current board. Reused by the human HUD and by AI decisions.
+    private func equity(for hole: [Card], opponents: Int, trials: Int) -> Double {
+        guard hole.count == 2 else { return 0 }
+        guard opponents > 0 else { return 1 }
+
+        let known = Set((hole + community).map { $0.rank * 10 + suitIndex($0.suit) })
         var remaining: [Card] = []
         for s in Card.Suit.allCases {
             for r in 2...14 where !known.contains(r * 10 + suitIndex(s)) {
                 remaining.append(Card(rank: r, suit: s))
             }
         }
-
-        let trials = 320
         let needBoard = 5 - community.count
         var winSum = 0.0
         for _ in 0..<trials {
@@ -124,7 +150,7 @@ final class TexasHoldemGame: ObservableObject {
             for _ in 0..<opponents { oppHands.append([pool[idx], pool[idx + 1]]); idx += 2 }
             var board = community
             for _ in 0..<needBoard { board.append(pool[idx]); idx += 1 }
-            let mine = HandEval.best7(players[0].hole + board)
+            let mine = HandEval.best7(hole + board)
             var better = 0, equal = 0
             for oh in oppHands {
                 let c = HandEval.compare(HandEval.best7(oh + board), mine)
@@ -132,11 +158,49 @@ final class TexasHoldemGame: ObservableObject {
             }
             if better == 0 { winSum += equal == 0 ? 1.0 : 1.0 / Double(equal + 1) }
         }
-        winProbability = winSum / Double(trials)
+        return winSum / Double(trials)
     }
 
     private func suitIndex(_ s: Card.Suit) -> Int {
         Card.Suit.allCases.firstIndex(of: s) ?? 0
+    }
+
+    /// Bill Chen's preflop hand-strength formula (~ 0 … 20; AA = 20).
+    private func chenScore(_ hole: [Card]) -> Double {
+        let a = max(hole[0].rank, hole[1].rank)
+        let b = min(hole[0].rank, hole[1].rank)
+        func high(_ r: Int) -> Double {
+            switch r {
+            case 14: return 10; case 13: return 8; case 12: return 7; case 11: return 6
+            default: return Double(r) / 2
+            }
+        }
+        var score: Double
+        if a == b {                         // pair
+            score = max(5, high(a) * 2)
+        } else {
+            score = high(a)
+        }
+        if hole[0].suit == hole[1].suit { score += 2 }   // suited
+        let gap = a - b
+        if a != b {
+            switch gap {
+            case 1: break
+            case 2: score -= 1
+            case 3: score -= 2
+            case 4: score -= 4
+            default: score -= 5
+            }
+            if gap <= 1 && a < 12 { score += 1 }          // straight potential, both < Q
+        }
+        return max(0, score.rounded())
+    }
+
+    /// 0 (early) … 1 (button) — how late this seat acts.
+    private func positionFactor(_ i: Int) -> Double {
+        let n = players.count
+        let seatsFromButton = (dealerButton - i + n) % n     // 0 = button
+        return 1 - Double(seatsFromButton) / Double(n)
     }
 
     // MARK: - Deck
@@ -373,7 +437,8 @@ final class TexasHoldemGame: ObservableObject {
         resultText = reason
         biggestPot = max(biggestPot, potTotal)
         withAnimation(.easeInOut(duration: 0.3)) { winnerSeats = Set(winners) }
-        if winners.contains(0) { wins += 1; winStreak += 1 } else { losses += 1; winStreak = 0 }
+        if winners.contains(0) { wins += 1; winStreak += 1; bonusAvailable = true }
+        else { losses += 1; winStreak = 0 }
         persist()
     }
 
@@ -397,54 +462,59 @@ final class TexasHoldemGame: ObservableObject {
 
     // MARK: - AI
 
+    // Realistic AI: Bill Chen's formula pre-flop, then Monte-Carlo equity vs pot
+    // odds post-flop, adjusted for position, with controlled aggression/bluffing.
     private func aiDecide(_ i: Int) -> Decision {
-        let toCall = currentBetToCall - players[i].bet
-        let strength = handStrength(i)
         let hard = difficulty == .hard
-        let bluff = hard && Double.random(in: 0..<1) < 0.16
+        let toCall = currentBetToCall - players[i].bet
+        let chips = players[i].chips
         let potOdds = toCall > 0 ? Double(toCall) / Double(pot + toCall) : 0
+        let position = positionFactor(i)                    // 0 early … 1 button
 
-        func raise() -> Decision {
-            let size = max(minRaise, Int(Double(pot) * (hard ? 0.7 : 0.5)))
+        func raise(fraction: Double) -> Decision {
+            let size = max(minRaise, Int(Double(max(pot, bigBlind)) * fraction))
             let target = currentBetToCall + size
-            if target >= players[i].bet + players[i].chips { return .allIn }
+            if target >= players[i].bet + chips { return .allIn }
             return .raiseTo(target)
         }
 
-        // Pre-flop with no raise yet: limp in to see the flop instead of
-        // folding off the bat. Only premium hands raise; nobody folds.
-        if community.isEmpty && currentBetToCall <= bigBlind {
-            if toCall == 0 { return .check }
-            if strength > 0.85 { return raise() }
-            return .call
+        // ---- Pre-flop: Chen formula (points ~0…20) ----
+        if community.isEmpty {
+            let chen = chenScore(players[i].hole) + position * 1.5      // late position looser
+            if currentBetToCall <= bigBlind {                           // unraised pot
+                if chen >= 11 { return raise(fraction: hard ? 0.9 : 0.7) }   // open premium
+                if toCall == 0 { return .check }
+                return .call                                            // limp to see the flop
+            } else {                                                    // facing a raise
+                if chen >= 14 { return raise(fraction: 1.0) }           // 3-bet monsters
+                if chen >= 9 { return .call }
+                if hard && chen >= 7 && Double.random(in: 0..<1) < 0.35 { return .call }
+                if chips <= toCall && chen >= 12 { return .allIn }
+                return .fold
+            }
         }
+
+        // ---- Post-flop: equity vs pot odds ----
+        let opponents = max(1, players.indices.filter { $0 != i && !players[$0].folded }.count)
+        let eq = equity(for: players[i].hole, opponents: opponents, trials: hard ? 140 : 100)
+        let bluffChance = hard ? 0.14 : 0.05
+        let bluff = Double.random(in: 0..<1) < bluffChance
 
         if toCall == 0 {
-            if strength > (hard ? 0.55 : 0.72) || bluff { return raise() }
+            // Can check or bet. Value-bet strong hands; occasional (semi-)bluff.
+            if eq > 0.66 { return raise(fraction: 0.66) }
+            if (eq > 0.45 && position > 0.6) || bluff { return raise(fraction: 0.5) }
             return .check
         } else {
-            if players[i].chips <= toCall {
-                return (strength > 0.5 || bluff) ? .allIn : .fold
+            // Facing a bet: the classic rule — call when equity ≥ pot odds.
+            if chips <= toCall {                                        // all-in decision
+                return (eq > potOdds + 0.05) ? .allIn : .fold
             }
-            if strength > (hard ? 0.7 : 0.82) || bluff { return raise() }
-            let callThreshold = hard ? 0.32 : 0.42
-            if strength > callThreshold && strength >= potOdds * 0.8 { return .call }
+            if eq > 0.78 { return raise(fraction: hard ? 0.9 : 0.7) }   // raise for value
+            let margin = hard ? 0.0 : 0.04                             // easy AI needs a better price
+            if eq >= potOdds + margin { return .call }
+            if bluff && position > 0.6 { return raise(fraction: 0.6) }  // positional bluff-raise
             return .fold
-        }
-    }
-
-    private func handStrength(_ i: Int) -> Double {
-        let hole = players[i].hole
-        if community.isEmpty {
-            let hi = max(hole[0].rank, hole[1].rank), lo = min(hole[0].rank, hole[1].rank)
-            var s = Double(hi) / 14 * 0.45 + Double(lo) / 14 * 0.15
-            if hole[0].rank == hole[1].rank { s += 0.34 + Double(hi) / 14 * 0.1 }
-            if hole[0].suit == hole[1].suit { s += 0.07 }
-            if abs(hole[0].rank - hole[1].rank) == 1 { s += 0.05 }
-            return min(1, s)
-        } else {
-            let category = HandEval.best7(hole + community)[0]   // 0...8
-            return min(1, Double(category) / 8 + 0.06)
         }
     }
 

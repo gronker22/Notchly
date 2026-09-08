@@ -11,6 +11,7 @@ import AppKit
 
 struct BlackjackView: View {
     @ObservedObject var game: BlackjackGame
+    @State private var showSlot = false
 
     var body: some View {
         VStack(spacing: 14) {
@@ -36,17 +37,30 @@ struct BlackjackView: View {
 
             messageView
 
+            coachHint
+
+            if game.bonusAvailable {
+                Button { showSlot = true } label: {
+                    Label("Bonus Spin", systemImage: "dice.fill")
+                        .font(.system(.subheadline, design: .rounded).weight(.bold))
+                        .foregroundStyle(.black)
+                        .padding(.horizontal, 14).padding(.vertical, 6)
+                        .background(Capsule().fill(.yellow))
+                }
+                .buttonStyle(.plain)
+            }
+
             controls
 
             statsAndSettings
         }
         .padding(20)
         .frame(width: 420, height: 600)
-        .background(
-            LinearGradient(colors: [Color(red: 0.05, green: 0.35, blue: 0.18),
-                                    Color(red: 0.02, green: 0.22, blue: 0.12)],
-                           startPoint: .top, endPoint: .bottom)
-        )
+        .background(FeltBackground())
+        .sheet(isPresented: $showSlot) {
+            SlotMachineView(onReward: { game.awardBonus($0) },
+                            onClose: { showSlot = false; game.clearBonus() })
+        }
     }
 
     // MARK: Top bar
@@ -64,6 +78,13 @@ struct BlackjackView: View {
                     .background(Capsule().fill(.black.opacity(0.25)))
             }
             Spacer()
+            // AI coach on/off
+            Button { game.showHint.toggle() } label: {
+                Image(systemName: game.showHint ? "lightbulb.fill" : "lightbulb.slash")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(game.showHint ? .yellow : .white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
             Label("\(game.highScore)", systemImage: "trophy.fill")
                 .font(.system(.subheadline, design: .rounded).weight(.bold))
                 .foregroundStyle(.orange)
@@ -137,6 +158,23 @@ struct BlackjackView: View {
     }
 
     // MARK: Controls
+
+    @ViewBuilder
+    private var coachHint: some View {
+        if game.showHint, let action = game.recommendedAction {
+            HStack(spacing: 6) {
+                Image(systemName: "lightbulb.fill").font(.system(size: 10))
+                Text("Basic strategy: \(action.label)")
+                    .font(.system(.caption, design: .rounded).weight(.bold))
+            }
+            .foregroundStyle(.yellow)
+            .padding(.horizontal, 10).padding(.vertical, 4)
+            .background(Capsule().fill(.yellow.opacity(0.14)))
+            .frame(height: 22)
+        } else {
+            Color.clear.frame(height: 22)
+        }
+    }
 
     @ViewBuilder
     private var controls: some View {
@@ -240,6 +278,8 @@ struct BlackjackView: View {
                         get: { game.dealerHitsSoft17 }, set: { game.dealerHitsSoft17 = $0 }))
                     Toggle("Show card count", isOn: Binding(
                         get: { game.showCount }, set: { game.showCount = $0 }))
+                    Toggle("Strategy hints (coach)", isOn: Binding(
+                        get: { game.showHint }, set: { game.showHint = $0 }))
 
                     Button("Reset stats") { game.resetStats() }
                         .font(.caption).foregroundStyle(.red).buttonStyle(.plain)
@@ -363,16 +403,9 @@ enum BlackjackWindowPresenter {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let w = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 600),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
-        )
-        w.title = "Blackjack"
-        w.isReleasedWhenClosed = false
-        w.contentView = NSHostingView(rootView: BlackjackView(game: game))
-        w.center()
+        let w = GameWindow.make(title: "Blackjack", design: CGSize(width: 420, height: 600)) {
+            BlackjackView(game: game)
+        }
         window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)

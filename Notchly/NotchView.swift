@@ -746,26 +746,6 @@ struct NotchView: View {
             }
             .buttonStyle(.plain)
 
-            // Roulette.
-            Button {
-                RouletteWindowPresenter.show()
-            } label: {
-                Image(systemName: "circle.hexagongrid.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .buttonStyle(.plain)
-
-            // Breakout.
-            Button {
-                BreakoutWindowPresenter.show()
-            } label: {
-                Image(systemName: "gamecontroller.fill")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.5))
-            }
-            .buttonStyle(.plain)
-
             Spacer(minLength: 0)
 
             Text("Sports")
