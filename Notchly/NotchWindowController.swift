@@ -20,7 +20,8 @@ final class NotchWindowController {
     private let state = NotchState()
     private var geometry: NotchGeometry
 
-    private var hoverTimer: Timer?
+    private var globalMouseMonitor: Any?
+    private var localMouseMonitor: Any?
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -88,14 +89,23 @@ final class NotchWindowController {
         startHoverMonitoring()
     }
 
-    // MARK: - Hover (cursor-position polling)
+    // MARK: - Hover (passive mouse-moved monitors)
 
+    /// Instead of polling the cursor 10×/second forever (which kept the CPU
+    /// awake and defeated App Nap), we listen for mouse-moved events. The
+    /// handlers only fire while the pointer actually moves; a still pointer costs
+    /// nothing. A global monitor covers movement over other apps; a local one
+    /// covers movement over our own (expanded) panel. `.mouseMoved` monitors do
+    /// NOT require the Accessibility permission.
     private func startHoverMonitoring() {
-        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        globalMouseMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.mouseMoved]) { [weak self] _ in
             self?.updateHoverState()
         }
-        RunLoop.main.add(t, forMode: .common)
-        hoverTimer = t
+        localMouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved]) { [weak self] event in
+            self?.updateHoverState()
+            return event
+        }
+        updateHoverState()
     }
 
     private func updateHoverState() {
@@ -105,12 +115,11 @@ final class NotchWindowController {
         let mouse = NSEvent.mouseLocation            // screen coords, y-up
         let screenFrame = geometry.screen.frame
 
-        // Trigger zone = the visible pill area (notch width × pill height) at the
-        // very top-center. Wide enough to reliably catch a hover over the notch,
-        // but NOT wider than the notch — so it never reaches the browser tab
-        // strip that flanks the notch.
-        let triggerW = geometry.collapsedWidth
-        let triggerH = geometry.collapsedHeight
+        // Trigger zone = the notch center only (not the flanks, so hovering
+        // menu-bar items beside the notch doesn't expand it), flush height so it
+        // doesn't reach down into the browser tab strip.
+        let triggerW = geometry.notchGap > 0 ? geometry.notchGap : geometry.collapsedWidth
+        let triggerH = geometry.collapsedIdleHeight
         let trigger = CGRect(
             x: screenFrame.midX - triggerW / 2,
             y: screenFrame.maxY - triggerH,
@@ -182,6 +191,20 @@ final class TrackingHostingView<Content: View>: NSHostingView<Content> {
     required init(rootView: Content) { fatalError("use init(rootView:state:geometry:)") }
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+
+    // Only capture clicks over the ACTUAL visible bubble. The panel frame is
+    // always the full expanded footprint, so without this a click in the empty
+    // transparent area below a short bubble would be swallowed instead of passing
+    // through to the app underneath.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        // While a drag is targeting we want the whole surface to accept the drop.
+        if state.isDragTargeting { return super.hitTest(point) }
+
+        let visibleHeight = max(geometry.collapsedHeight, state.bubbleHeight) + 6
+        // View is not flipped: y grows upward, bubble is anchored to the top.
+        if point.y < bounds.height - visibleHeight { return nil }
+        return super.hitTest(point)
+    }
 
     // MARK: - Drag-to-dock destination
 

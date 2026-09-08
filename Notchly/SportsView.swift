@@ -73,18 +73,47 @@ struct SportsView: View {
 
     // MARK: Live list
 
+    /// Games grouped by league, in a stable league order.
+    private var groupedLive: [(league: League, games: [LiveGame])] {
+        League.allCases.compactMap { league in
+            let games = liveOrUpcoming.filter { $0.league == league }
+            return games.isEmpty ? nil : (league, games)
+        }
+    }
+
     @ViewBuilder
     private var liveList: some View {
         if liveOrUpcoming.isEmpty {
             emptyText("No live games right now")
+        } else if liveOrUpcoming.count <= 5 {
+            groupedLiveContent
         } else {
-            VStack(spacing: 4) {
-                ForEach(liveOrUpcoming) { game in
+            // More than 5 — cap the height and scroll for the rest.
+            ScrollView(.vertical, showsIndicators: true) {
+                groupedLiveContent
+            }
+            .frame(height: 132)
+        }
+    }
+
+    @ViewBuilder
+    private var groupedLiveContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(groupedLive, id: \.league) { group in
+                leagueHeader(group.league)
+                ForEach(group.games) { game in
                     Button { open(game.link) } label: { liveRow(game) }
                         .buttonStyle(.plain)
                 }
             }
         }
+    }
+
+    private func leagueHeader(_ league: League) -> some View {
+        Text(league.displayName.uppercased())
+            .font(.system(size: 8, weight: .bold, design: .rounded))
+            .foregroundStyle(.white.opacity(0.45))
+            .padding(.top, 3)
     }
 
     private func liveRow(_ game: LiveGame) -> some View {
@@ -135,13 +164,33 @@ struct SportsView: View {
 
     // MARK: Yesterday list
 
+    private var groupedYesterday: [(league: League, games: [FinishedGame])] {
+        League.allCases.compactMap { league in
+            let games = sports.yesterdayResults.filter { $0.league == league }
+            return games.isEmpty ? nil : (league, games)
+        }
+    }
+
     @ViewBuilder
     private var yesterdayList: some View {
         if sports.yesterdayResults.isEmpty {
             emptyText("No games yesterday")
+        } else if sports.yesterdayResults.count <= 5 {
+            groupedYesterdayContent
         } else {
-            VStack(spacing: 4) {
-                ForEach(sports.yesterdayResults) { game in
+            ScrollView(.vertical, showsIndicators: true) {
+                groupedYesterdayContent
+            }
+            .frame(height: 132)
+        }
+    }
+
+    @ViewBuilder
+    private var groupedYesterdayContent: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(groupedYesterday, id: \.league) { group in
+                leagueHeader(group.league)
+                ForEach(group.games) { game in
                     Button { open(game.link) } label: { resultRow(game) }
                         .buttonStyle(.plain)
                 }
@@ -163,13 +212,6 @@ struct SportsView: View {
                 .lineLimit(1)
                 .frame(maxWidth: .infinity, alignment: .trailing)
             TeamBadge(logo: game.awayLogo, colorHex: game.awayColor)
-
-            Text(game.league.badge)
-                .font(.system(size: 8, weight: .bold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.7))
-                .padding(.horizontal, 4)
-                .padding(.vertical, 1)
-                .background(Capsule().fill(.white.opacity(0.12)))
         }
         .font(.system(size: 11, weight: .medium, design: .rounded))
         .foregroundStyle(.white)

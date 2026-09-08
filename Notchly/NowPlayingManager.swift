@@ -11,10 +11,42 @@
 //  Spotify/Music"). Needs NSAppleEventsUsageDescription. We never *launch* a
 //  player — we only script it when it's already running (checked via NSWorkspace).
 //
+//  ⚠️ AppleScript round-trips can be slow (and the first one blocks on a consent
+//  dialog), so ALL scripting runs on a background serial queue; only the parsed
+//  result is published back on the main actor.
+//
 
 import Foundation
 import AppKit
 import Combine
+
+/// The two scriptable players. Declared outside the @MainActor class so it (and
+/// its helpers) can be used from the background scripting queue.
+private enum NowPlayingPlayer: Sendable {
+    case spotify, music
+    var bundleID: String {
+        switch self {
+        case .spotify: return "com.spotify.client"
+        case .music:   return "com.apple.Music"
+        }
+    }
+    var appName: String {
+        switch self {
+        case .spotify: return "Spotify"
+        case .music:   return "Music"
+        }
+    }
+}
+
+/// Plain value type carried from the background scripting queue to the main
+/// actor — no reference to `self`, so it's safe to hop actors with.
+private struct NowPlayingSnapshot: Sendable {
+    let player: NowPlayingPlayer
+    let isPlaying: Bool
+    let title: String
+    let artist: String
+    let artworkURL: String?
+}
 
 @MainActor
 final class NowPlayingManager: ObservableObject {
@@ -25,31 +57,17 @@ final class NowPlayingManager: ObservableObject {
     @Published var isPlaying: Bool = false
     @Published var hasTrack: Bool = false
 
-    private enum Player {
-        case spotify, music
-        var bundleID: String {
-            switch self {
-            case .spotify: return "com.spotify.client"
-            case .music:   return "com.apple.Music"
-            }
-        }
-        var appName: String {
-            switch self {
-            case .spotify: return "Spotify"
-            case .music:   return "Music"
-            }
-        }
-    }
-
-    private var activePlayer: Player?
     private var timer: Timer?
     private var lastArtworkURL: String?
+
+    /// Serial queue for all (blocking) AppleScript work.
+    private let scriptQueue = DispatchQueue(label: "com.notchly.nowplaying.applescript")
 
     // MARK: - Lifecycle
 
     func start() {
         let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor [weak self] in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -63,33 +81,80 @@ final class NowPlayingManager: ObservableObject {
     func previousTrack()   { runControl("previous track") }
 
     private func runControl(_ command: String) {
-        guard let player = activePlayer else { return }
-        _ = runAppleScript("tell application \"\(player.appName)\" to \(command)")
-        // Reflect the change quickly rather than waiting for the next poll.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in self?.refresh() }
+        scriptQueue.async { [weak self] in
+            guard let player = NowPlayingScripting.pickPlayer() else { return }
+            _ = NowPlayingScripting.runAppleScript("tell application \"\(player.appName)\" to \(command)")
+            // Reflect the change quickly rather than waiting for the next poll.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
+        }
     }
 
     // MARK: - Refresh
 
     private func refresh() {
-        // Prefer a player that is actually playing; otherwise show a paused one.
-        if let p = pickPlayer() {
-            activePlayer = p
-            apply(player: p)
-        } else {
-            activePlayer = nil
-            clear()
+        scriptQueue.async { [weak self] in
+            let snapshot = NowPlayingScripting.fetchSnapshot()
+            Task { @MainActor [weak self] in self?.apply(snapshot) }
         }
     }
 
-    private func isRunning(_ player: Player) -> Bool {
+    /// Runs on the main actor: publishes the snapshot and (for Spotify) kicks off
+    /// artwork loading.
+    private func apply(_ snapshot: NowPlayingSnapshot?) {
+        guard let snapshot else { clear(); return }
+
+        isPlaying = snapshot.isPlaying
+        hasTrack = !snapshot.title.isEmpty
+        title = snapshot.title.isEmpty ? "Nothing playing" : snapshot.title
+        artist = snapshot.artist
+
+        if let urlString = snapshot.artworkURL, !urlString.isEmpty {
+            loadArtwork(urlString: urlString)
+        } else {
+            // Apple Music: no easy AppleScript artwork → fall back to app icon.
+            lastArtworkURL = nil
+            artwork = NSWorkspace.shared.runningApplications
+                .first { $0.bundleIdentifier == snapshot.player.bundleID }?.icon
+        }
+    }
+
+    private func clear() {
+        title = "Nothing playing"
+        artist = ""
+        artwork = nil
+        isPlaying = false
+        hasTrack = false
+        lastArtworkURL = nil
+    }
+
+    // MARK: - Artwork
+
+    private func loadArtwork(urlString: String) {
+        guard urlString != lastArtworkURL, let url = URL(string: urlString) else { return }
+        lastArtworkURL = urlString
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let image = NSImage(data: data) else { return }
+            Task { @MainActor [weak self] in self?.artwork = image }
+        }.resume()
+    }
+
+    deinit { timer?.invalidate() }
+}
+
+// MARK: - Scripting (fully nonisolated — runs on the background scripting queue)
+
+private enum NowPlayingScripting {
+
+    static func isRunning(_ player: NowPlayingPlayer) -> Bool {
         NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == player.bundleID }
     }
 
     /// Choose which player to display: a playing one wins; else any running one.
-    private func pickPlayer() -> Player? {
-        var pausedCandidate: Player?
-        for player in [Player.spotify, .music] where isRunning(player) {
+    static func pickPlayer() -> NowPlayingPlayer? {
+        var pausedCandidate: NowPlayingPlayer?
+        for player in [NowPlayingPlayer.spotify, .music] where isRunning(player) {
             switch state(of: player) {
             case "playing": return player
             case "paused", "stopped": if pausedCandidate == nil { pausedCandidate = player }
@@ -99,12 +164,15 @@ final class NowPlayingManager: ObservableObject {
         return pausedCandidate
     }
 
-    private func state(of player: Player) -> String {
+    static func state(of player: NowPlayingPlayer) -> String {
         runAppleScript("tell application \"\(player.appName)\" to return player state as text")?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
-    private func apply(player: Player) {
+    /// Full read of the active player. Returns nil when nothing is playing/paused.
+    static func fetchSnapshot() -> NowPlayingSnapshot? {
+        guard let player = pickPlayer() else { return nil }
+
         let script: String
         switch player {
         case .spotify:
@@ -129,59 +197,28 @@ final class NowPlayingManager: ObservableObject {
             """
         }
 
-        guard let raw = runAppleScript(script) else { clear(); return }
+        guard let raw = runAppleScript(script) else { return nil }
         let parts = raw.components(separatedBy: "\n")
-        guard parts.count >= 3 else { clear(); return }
+        guard parts.count >= 3 else { return nil }
 
         let st = parts[0].trimmingCharacters(in: .whitespaces)
         let trackTitle = parts[1].trimmingCharacters(in: .whitespaces)
         let trackArtist = parts[2].trimmingCharacters(in: .whitespaces)
+        let artURL = (player == .spotify && parts.count >= 4)
+            ? parts[3].trimmingCharacters(in: .whitespaces) : nil
 
-        isPlaying = (st == "playing")
-        hasTrack = !trackTitle.isEmpty
-        title = trackTitle.isEmpty ? "Nothing playing" : trackTitle
-        artist = trackArtist
-
-        if player == .spotify, parts.count >= 4 {
-            loadArtwork(urlString: parts[3].trimmingCharacters(in: .whitespaces))
-        } else {
-            // Apple Music: no easy AppleScript artwork → fall back to the app icon.
-            lastArtworkURL = nil
-            artwork = NSWorkspace.shared.runningApplications
-                .first { $0.bundleIdentifier == player.bundleID }?.icon
-        }
+        return NowPlayingSnapshot(player: player,
+                                  isPlaying: st == "playing",
+                                  title: trackTitle,
+                                  artist: trackArtist,
+                                  artworkURL: artURL)
     }
 
-    private func clear() {
-        title = "Nothing playing"
-        artist = ""
-        artwork = nil
-        isPlaying = false
-        hasTrack = false
-        lastArtworkURL = nil
-    }
-
-    // MARK: - Artwork
-
-    private func loadArtwork(urlString: String) {
-        guard !urlString.isEmpty, urlString != lastArtworkURL,
-              let url = URL(string: urlString) else { return }
-        lastArtworkURL = urlString
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-            guard let data, let image = NSImage(data: data) else { return }
-            Task { @MainActor in self?.artwork = image }
-        }.resume()
-    }
-
-    // MARK: - AppleScript
-
-    private func runAppleScript(_ source: String) -> String? {
+    static func runAppleScript(_ source: String) -> String? {
         var error: NSDictionary?
         guard let script = NSAppleScript(source: source) else { return nil }
         let result = script.executeAndReturnError(&error)
         if error != nil { return nil }
         return result.stringValue
     }
-
-    deinit { timer?.invalidate() }
 }

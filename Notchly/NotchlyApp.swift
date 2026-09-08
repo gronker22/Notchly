@@ -27,6 +27,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchController: NotchWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Single-instance guard: if another Notchly is already running (e.g. an
+        // installed copy plus a debug build — both share the bundle id), quit
+        // immediately so we don't draw a second, overlapping notch bubble.
+        if let bundleID = Bundle.main.bundleIdentifier {
+            let others = NSRunningApplication
+                .runningApplications(withBundleIdentifier: bundleID)
+                .filter { $0 != .current }
+            if !others.isEmpty {
+                NSApp.terminate(nil)
+                return
+            }
+        }
+
         // Accessory app: no Dock icon, no menu bar takeover.
         NSApp.setActivationPolicy(.accessory)
 

@@ -49,8 +49,8 @@ struct NotchView: View {
 
     // PHASE 4: system awareness + clipboard
     @StateObject private var media = MediaAccessMonitor()
-    @StateObject private var network = NetworkMonitor()
     @StateObject private var clipboard = ClipboardManager()
+    @StateObject private var wifi = WiFiMonitor()
 
     // Live sports
     @StateObject private var sports = SportsManager()
@@ -84,7 +84,6 @@ struct NotchView: View {
     /// Is there any collapsed content worth dropping the pill down for?
     private var collapsedHasInfo: Bool {
         pomodoro.isRunning
-            || network.showsTicker
             || media.micActive
             || media.cameraActive
             || (sports.isSportsEnabled && sports.liveGames.contains { $0.state == .live })
@@ -154,8 +153,8 @@ struct NotchView: View {
             calendar.start()
             // PHASE 4: start system-awareness + clipboard.
             media.start()
-            network.start()
             clipboard.start()
+            wifi.start()
             // Live sports polling.
             sports.start()
             // Incoming notification peek.
@@ -330,40 +329,37 @@ struct NotchView: View {
             }
             .opacity(pomodoro.isRunning ? 1 : 0)
 
-            // Leading (Pomodoro time + network ticker) / trailing (media dots).
-            HStack(spacing: 6) {
-                // Remaining-time countdown, visible in the collapsed notch.
-                if pomodoro.isRunning {
-                    Text(pomodoro.remainingString)
-                        .font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .id(pomodoro.tickToken)   // refresh each second
+            // Content sits BESIDE the physical notch: timer on the left flank,
+            // mic/camera + sports on the right flank, notch gap in the middle.
+            HStack(spacing: 0) {
+                // LEFT flank
+                HStack(spacing: 5) {
+                    Spacer(minLength: 0)
+                    if pomodoro.isRunning {
+                        Text(pomodoro.remainingString)
+                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .id(pomodoro.tickToken)
+                    }
                 }
+                .frame(width: geometry.flankWidth)
+                .padding(.trailing, 4)
 
-                // PHASE 4: network ticker, only above 500 KB/s, fades when idle.
-                if network.showsTicker {
-                    Text(network.tickerString)
-                        .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.85))
-                        .transition(.opacity)
+                // Notch gap (empty — the physical camera housing).
+                Color.clear.frame(width: geometry.notchGap)
+
+                // RIGHT flank
+                HStack(spacing: 5) {
+                    collapsedMediaIndicator
+                    if sports.isSportsEnabled {
+                        SportsTicker(sports: sports)
+                    }
+                    Spacer(minLength: 0)
                 }
-
-                // Live sports score ticker (cycles when multiple games are live).
-                if sports.isSportsEnabled {
-                    SportsTicker(sports: sports)
-                }
-
-                Spacer(minLength: 0)
-
-                // PHASE 4: mic/camera dots + the using app's icon (16x16).
-                collapsedMediaIndicator
+                .frame(width: geometry.flankWidth)
+                .padding(.leading, 4)
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 3)
-            // Sit the info row in the strip BELOW the notch (live screen), so the
-            // running countdown etc. is actually visible and not hidden in the notch.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-            .animation(.easeInOut(duration: 0.25), value: network.showsTicker)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .animation(.easeInOut(duration: 0.25), value: media.micActive)
             .animation(.easeInOut(duration: 0.25), value: media.cameraActive)
         }
@@ -391,11 +387,7 @@ struct NotchView: View {
                 }
 
                 HStack(alignment: .center, spacing: 12) {
-                    Label(network.fullString, systemImage: "dot.radiowaves.up.forward")
-                        .font(.system(.caption2, design: .rounded).weight(.medium).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.75))
-                        .labelStyle(.titleAndIcon)
-                        .lineLimit(1)
+                    wifiRow
                     Spacer(minLength: 0)
                     mediaAccessRow
                 }
@@ -591,6 +583,36 @@ struct NotchView: View {
         }
     }
 
+    // MARK: - Wi-Fi strength (expanded row)
+
+    @ViewBuilder
+    private var wifiRow: some View {
+        HStack(spacing: 6) {
+            if wifi.isConnected {
+                Image(systemName: "wifi", variableValue: wifi.quality)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(wifi.quality >= 0.4 ? .white : .orange)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(wifi.ssid ?? "Wi-Fi")
+                        .font(.system(.caption2, design: .rounded).weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                    Text("\(wifi.qualityLabel) · \(wifi.rssi ?? 0) dBm")
+                        .font(.system(size: 9, design: .rounded))
+                        .foregroundStyle(.white.opacity(0.55))
+                        .lineLimit(1)
+                }
+            } else {
+                Image(systemName: "wifi.slash")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.4))
+                Text("No Wi-Fi")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.4))
+            }
+        }
+    }
+
     // MARK: - PHASE 4: Mic/camera (expanded row)
 
     @ViewBuilder
@@ -699,6 +721,46 @@ struct NotchView: View {
                 SettingsWindowPresenter.show(sports: sports)
             } label: {
                 Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Blackjack game.
+            Button {
+                BlackjackWindowPresenter.show()
+            } label: {
+                Image(systemName: "suit.spade.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Texas Hold'em poker.
+            Button {
+                HoldemWindowPresenter.show()
+            } label: {
+                Image(systemName: "suit.heart.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Roulette.
+            Button {
+                RouletteWindowPresenter.show()
+            } label: {
+                Image(systemName: "circle.hexagongrid.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Breakout.
+            Button {
+                BreakoutWindowPresenter.show()
+            } label: {
+                Image(systemName: "gamecontroller.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.5))
             }

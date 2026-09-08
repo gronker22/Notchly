@@ -115,7 +115,7 @@ final class PomodoroManager: ObservableObject {
         isRunning = true
         runStart = Date()
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
+            Task { @MainActor [weak self] in self?.tick() }
         }
         RunLoop.main.add(t, forMode: .common)
         timer = t

@@ -31,7 +31,7 @@ final class CalendarManager: ObservableObject {
 
         // Re-evaluate the countdown / imminence every 15s.
         let t = Timer(timeInterval: 15, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.refresh() }
+            Task { @MainActor [weak self] in self?.refresh() }
         }
         RunLoop.main.add(t, forMode: .common)
         refreshTimer = t

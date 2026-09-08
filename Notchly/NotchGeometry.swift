@@ -33,18 +33,21 @@ struct NotchGeometry {
 
     // MARK: - Collapsed pill sizing (Phase 1 spec)
 
-    /// Collapsed bubble width (~200pt), at least as wide as the real notch.
-    var collapsedWidth: CGFloat { max(200, notchWidth) }
-    /// Collapsed height when there IS content to show (timer, indicators): a strip
-    /// below the physical notch so that content renders on live screen.
-    var collapsedHeight: CGFloat { max(36, notchHeight) + 16 }
+    /// Width of each flank (menu-bar strip) beside the physical notch where
+    /// collapsed content is shown.
+    var flankWidth: CGFloat { 66 }
+    /// The dead-zone gap in the middle = the physical notch (0 on non-notch).
+    var notchGap: CGFloat { hasHardwareNotch ? notchWidth : 0 }
 
-    /// Collapsed height when idle: flush with the notch so the pill doesn't hang
-    /// down over the window title of the app beneath it.
-    var collapsedIdleHeight: CGFloat { max(36, notchHeight) }
+    /// Collapsed bubble WIDTH: the notch plus a flank on each side, so content
+    /// (timer, mic/camera) sits beside the notch rather than dropping below it.
+    var collapsedWidth: CGFloat { notchGap + flankWidth * 2 }
+    /// Collapsed height: always flush with the notch (never hangs down).
+    var collapsedHeight: CGFloat { max(32, notchHeight) }
+    var collapsedIdleHeight: CGFloat { max(32, notchHeight) }
 
     /// The strip below the notch where collapsed content is drawn.
-    var collapsedContentInset: CGFloat { max(36, notchHeight) }
+    var collapsedContentInset: CGFloat { max(32, notchHeight) }
 
     // MARK: - Expanded bubble sizing (Phase 1 spec)
 

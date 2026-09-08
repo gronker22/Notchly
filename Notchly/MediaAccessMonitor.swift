@@ -35,17 +35,35 @@ final class MediaAccessMonitor: ObservableObject {
     }
 
     private var pollTimer: Timer?
+
+    // Mic listener bookkeeping so we can re-install on device change and remove
+    // it cleanly (the old code leaked the block and went stale when the user
+    // switched input devices, e.g. plugging in headphones).
     private var micListenerDevice: AudioObjectID?
+    private var micListenerBlock: AudioObjectPropertyListenerBlock?
+    private var defaultDeviceListenerBlock: AudioObjectPropertyListenerBlock?
+
+    private var isRunningAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
+    private var defaultDeviceAddress = AudioObjectPropertyAddress(
+        mSelector: kAudioHardwarePropertyDefaultInputDevice,
+        mScope: kAudioObjectPropertyScopeGlobal,
+        mElement: kAudioObjectPropertyElementMain
+    )
 
     // MARK: - Lifecycle
 
     func start() {
-        installMicListener()
+        if let device = defaultInputDevice() { installMicListener(on: device) }
+        installDefaultDeviceListener()
 
         // 1s poll: backstop for the mic listener + the camera (CoreMediaIO has
         // no equally convenient block API path here).
         let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+            Task { @MainActor [weak self] in self?.poll() }
         }
         RunLoop.main.add(t, forMode: .common)
         pollTimer = t
@@ -109,17 +127,36 @@ final class MediaAccessMonitor: ObservableObject {
         return status == noErr && result != 0
     }
 
-    private func installMicListener() {
-        guard let device = defaultInputDevice() else { return }
+    private func installMicListener(on device: AudioObjectID) {
+        removeMicListener()
         micListenerDevice = device
-        var addr = AudioObjectPropertyAddress(
-            mSelector: kAudioDevicePropertyDeviceIsRunningSomewhere,
-            mScope: kAudioObjectPropertyScopeGlobal,
-            mElement: kAudioObjectPropertyElementMain
-        )
-        AudioObjectAddPropertyListenerBlock(device, &addr, DispatchQueue.main) { [weak self] _, _ in
-            Task { @MainActor in self?.updateMic(self?.isMicRunning() ?? false) }
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.updateMic(self?.isMicRunning() ?? false) }
         }
+        micListenerBlock = block
+        AudioObjectAddPropertyListenerBlock(device, &isRunningAddress, DispatchQueue.main, block)
+    }
+
+    private func removeMicListener() {
+        guard let device = micListenerDevice, let block = micListenerBlock else { return }
+        AudioObjectRemovePropertyListenerBlock(device, &isRunningAddress, DispatchQueue.main, block)
+        micListenerDevice = nil
+        micListenerBlock = nil
+    }
+
+    /// Re-point the mic listener whenever the default input device changes, so
+    /// mic detection keeps working after the user switches audio inputs.
+    private func installDefaultDeviceListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                if let device = self.defaultInputDevice() { self.installMicListener(on: device) }
+                self.updateMic(self.isMicRunning())
+            }
+        }
+        defaultDeviceListenerBlock = block
+        AudioObjectAddPropertyListenerBlock(
+            AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, DispatchQueue.main, block)
     }
 
     // MARK: - Camera (CoreMediaIO)
@@ -158,5 +195,14 @@ final class MediaAccessMonitor: ObservableObject {
         return false
     }
 
-    deinit { pollTimer?.invalidate() }
+    deinit {
+        pollTimer?.invalidate()
+        if let device = micListenerDevice, let block = micListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(device, &isRunningAddress, DispatchQueue.main, block)
+        }
+        if let block = defaultDeviceListenerBlock {
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &defaultDeviceAddress, DispatchQueue.main, block)
+        }
+    }
 }

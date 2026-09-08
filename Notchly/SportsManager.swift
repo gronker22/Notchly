@@ -16,9 +16,11 @@ import Combine
 
 enum League: String, CaseIterable, Identifiable, Codable {
     case nba
+    case euroLeague
     case premierLeague
     case championsLeague
     case laLiga
+    case greekSuperLeague
     case worldCup
 
     var id: String { rawValue }
@@ -26,32 +28,38 @@ enum League: String, CaseIterable, Identifiable, Codable {
     /// ESPN path segment after `.../sports/`.
     var path: String {
         switch self {
-        case .nba:             return "basketball/nba"
-        case .premierLeague:   return "soccer/eng.1"
-        case .championsLeague: return "soccer/uefa.champions"
-        case .laLiga:          return "soccer/esp.1"
-        case .worldCup:        return "soccer/fifa.world"
+        case .nba:               return "basketball/nba"
+        case .euroLeague:        return "basketball/euroleague"
+        case .premierLeague:     return "soccer/eng.1"
+        case .championsLeague:   return "soccer/uefa.champions"
+        case .laLiga:            return "soccer/esp.1"
+        case .greekSuperLeague:  return "soccer/gre.1"
+        case .worldCup:          return "soccer/fifa.world"
         }
     }
 
     var displayName: String {
         switch self {
-        case .nba:             return "NBA"
-        case .premierLeague:   return "Premier League"
-        case .championsLeague: return "Champions League"
-        case .laLiga:          return "La Liga"
-        case .worldCup:        return "World Cup"
+        case .nba:               return "NBA"
+        case .euroLeague:        return "EuroLeague"
+        case .premierLeague:     return "Premier League"
+        case .championsLeague:   return "Champions League"
+        case .laLiga:            return "La Liga"
+        case .greekSuperLeague:  return "Super League Greece"
+        case .worldCup:          return "World Cup"
         }
     }
 
     /// Short badge initial shown on result rows.
     var badge: String {
         switch self {
-        case .nba:             return "NBA"
-        case .premierLeague:   return "PL"
-        case .championsLeague: return "CL"
-        case .laLiga:          return "LL"
-        case .worldCup:        return "WC"
+        case .nba:               return "NBA"
+        case .euroLeague:        return "EL"
+        case .premierLeague:     return "PL"
+        case .championsLeague:   return "CL"
+        case .laLiga:            return "LL"
+        case .greekSuperLeague:  return "GR"
+        case .worldCup:          return "WC"
         }
     }
 }
@@ -130,6 +138,7 @@ final class SportsManager: ObservableObject {
         static let followedTeams = "notchly.followedTeams"
         static let enabledLeagues = "notchly.enabledLeagues"
         static let enabled = "notchly.sports.enabled"
+        static let leaguesMigrationV2 = "notchly.leagues.migration.v2"
     }
 
     private var pollTask: Task<Void, Never>?
@@ -141,6 +150,15 @@ final class SportsManager: ObservableObject {
             enabledLeagues = Set(raw.compactMap(League.init(rawValue:)))
         } else {
             enabledLeagues = Set(League.allCases)   // all on by default
+        }
+
+        // One-time migration: turn EuroLeague + Greek Super League on for
+        // existing users when they're added (without re-enabling ones the user
+        // deliberately switched off).
+        if !defaults.bool(forKey: Keys.leaguesMigrationV2) {
+            enabledLeagues.insert(.euroLeague)
+            enabledLeagues.insert(.greekSuperLeague)
+            defaults.set(true, forKey: Keys.leaguesMigrationV2)
         }
     }
 
@@ -205,8 +223,21 @@ final class SportsManager: ObservableObject {
         var games: [LiveGame] = []
         var anySuccess = false
 
-        for league in League.allCases where enabledLeagues.contains(league) {
-            if let events = await fetchScoreboard(path: league.path, date: nil) {
+        // Fetch all enabled leagues concurrently instead of serially.
+        let leagues = League.allCases.filter { enabledLeagues.contains($0) }
+        let results = await withTaskGroup(of: (League, [ESPNEvent]?).self) { group in
+            for league in leagues {
+                group.addTask { [weak self] in
+                    (league, await self?.fetchScoreboard(path: league.path, date: nil) ?? nil)
+                }
+            }
+            var out: [(League, [ESPNEvent]?)] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+
+        for (league, events) in results {
+            if let events {
                 anySuccess = true
                 games += events.compactMap { liveGame(from: $0, league: league) }
             }
@@ -231,8 +262,20 @@ final class SportsManager: ObservableObject {
         var results: [FinishedGame] = []
         var anySuccess = false
 
-        for league in League.allCases where enabledLeagues.contains(league) {
-            if let events = await fetchScoreboard(path: league.path, date: dateString) {
+        let leagues = League.allCases.filter { enabledLeagues.contains($0) }
+        let fetched = await withTaskGroup(of: (League, [ESPNEvent]?).self) { group in
+            for league in leagues {
+                group.addTask { [weak self] in
+                    (league, await self?.fetchScoreboard(path: league.path, date: dateString) ?? nil)
+                }
+            }
+            var out: [(League, [ESPNEvent]?)] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+
+        for (league, events) in fetched {
+            if let events {
                 anySuccess = true
                 results += events.compactMap { finishedGame(from: $0, league: league) }
             }
@@ -250,9 +293,11 @@ final class SportsManager: ObservableObject {
         var urlString = baseURL + path + "/scoreboard"
         if let date { urlString += "?dates=\(date)" }
         guard let url = URL(string: urlString) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12   // don't let one stalled endpoint hang a refresh
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(for: request)
             guard (response as? HTTPURLResponse)?.statusCode == 200 else { return nil }
             let board = try? JSONDecoder().decode(ESPNScoreboard.self, from: data)
             return board?.events ?? []     // decode failure → treat as "no games"
@@ -273,6 +318,16 @@ final class SportsManager: ObservableObject {
         else { return nil }
 
         let state = Self.mapState(event.status?.type?.state)
+
+        // Keep games in the Live tab through the night: today's "sports day"
+        // runs until 6 AM tomorrow (local time), so late US games that fall in
+        // the early hours still count as today. Drop fixtures beyond that.
+        if state == .pre,
+           let date = Self.parseDate(event.date),
+           !Self.isWithinTodayWindow(date) {
+            return nil
+        }
+
         return LiveGame(
             id: event.id ?? UUID().uuidString,
             homeTeam: homeName,
@@ -317,6 +372,15 @@ final class SportsManager: ObservableObject {
             homeColor: home.team?.color,
             awayColor: away.team?.color
         )
+    }
+
+    /// True if `date` is within today's "sports day": from the start of today
+    /// through 6 AM the next morning (local time), inclusive of 6 AM kickoffs.
+    private static func isWithinTodayWindow(_ date: Date) -> Bool {
+        let cal = Calendar.current
+        let start = cal.startOfDay(for: Date())
+        guard let end = cal.date(byAdding: .hour, value: 30, to: start) else { return false }
+        return date >= start && date <= end
     }
 
     private static func mapState(_ raw: String?) -> GameState {
@@ -414,11 +478,11 @@ final class SportsManager: ObservableObject {
 
 // MARK: - ESPN response (best-effort decoding)
 
-private struct ESPNScoreboard: Decodable {
+private struct ESPNScoreboard: Decodable, Sendable {
     let events: [ESPNEvent]?
 }
 
-struct ESPNEvent: Decodable {
+struct ESPNEvent: Decodable, Sendable {
     let id: String?
     let date: String?
     let status: ESPNStatus?
@@ -426,30 +490,30 @@ struct ESPNEvent: Decodable {
     let links: [ESPNLink]?
 }
 
-struct ESPNStatus: Decodable {
+struct ESPNStatus: Decodable, Sendable {
     let displayClock: String?
     let period: Int?
     let type: ESPNStatusType?
 }
 
-struct ESPNStatusType: Decodable {
+struct ESPNStatusType: Decodable, Sendable {
     let state: String?
     let completed: Bool?
     let shortDetail: String?
     let detail: String?
 }
 
-struct ESPNCompetition: Decodable {
+struct ESPNCompetition: Decodable, Sendable {
     let competitors: [ESPNCompetitor]?
 }
 
-struct ESPNCompetitor: Decodable {
+struct ESPNCompetitor: Decodable, Sendable {
     let homeAway: String?
     let score: String?
     let team: ESPNTeam?
 }
 
-struct ESPNTeam: Decodable {
+struct ESPNTeam: Decodable, Sendable {
     let displayName: String?
     let shortDisplayName: String?
     let abbreviation: String?
@@ -457,7 +521,7 @@ struct ESPNTeam: Decodable {
     let color: String?
 }
 
-struct ESPNLink: Decodable {
+struct ESPNLink: Decodable, Sendable {
     let href: String?
     let rel: [String]?
 }
