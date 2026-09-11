@@ -58,6 +58,7 @@ final class NowPlayingManager: ObservableObject {
     @Published var hasTrack: Bool = false
 
     private var timer: Timer?
+    private var active = false
     private var lastArtworkURL: String?
 
     /// Serial queue for all (blocking) AppleScript work.
@@ -65,13 +66,29 @@ final class NowPlayingManager: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// One-shot prime so the panel has something to show the first time it opens.
+    /// The repeating poll is expensive (AppleScript IPC to Spotify/Music), so it
+    /// runs only while the expanded panel is visible — driven by `setActive`.
     func start() {
-        let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.refresh() }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
         refresh()
+    }
+
+    /// Start/stop the 1.5s poll. Called with `true` when the notch expands and
+    /// `false` when it collapses, so a closed notch does zero AppleScript work.
+    func setActive(_ active: Bool) {
+        guard active != self.active else { return }
+        self.active = active
+        if active {
+            let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.refresh() }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+            refresh()
+        } else {
+            timer?.invalidate()
+            timer = nil
+        }
     }
 
     // MARK: - Transport controls

@@ -37,7 +37,9 @@ final class ClipboardManager: ObservableObject {
 
     func start() {
         captureCurrent()
-        let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
+        // Battery: the changeCount check is cheap, but 2×/second is needless. 1s
+        // still captures copies well before the user opens the notch to see them.
+        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.poll() }
         }
         RunLoop.main.add(t, forMode: .common)

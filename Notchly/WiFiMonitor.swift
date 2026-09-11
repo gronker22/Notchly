@@ -21,14 +21,29 @@ final class WiFiMonitor: ObservableObject {
 
     private let client = CWWiFiClient.shared()
     private var timer: Timer?
+    private var active = false
 
+    /// One-shot prime; the repeating poll runs only while the panel is open.
     func start() {
         poll()
-        let t = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.poll() }
+    }
+
+    /// Wi-Fi strength is only shown in the expanded panel, so only poll while
+    /// it's open. Collapsed, we keep the last reading and stop waking CoreWLAN.
+    func setActive(_ active: Bool) {
+        guard active != self.active else { return }
+        self.active = active
+        if active {
+            poll()
+            let t = Timer(timeInterval: 4, repeats: true) { [weak self] _ in
+                Task { @MainActor [weak self] in self?.poll() }
+            }
+            RunLoop.main.add(t, forMode: .common)
+            timer = t
+        } else {
+            timer?.invalidate()
+            timer = nil
         }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
     }
 
     private func poll() {

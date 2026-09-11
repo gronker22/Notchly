@@ -25,6 +25,7 @@ struct NotchlyApp: App {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var notchController: NotchWindowController?
+    private var statusItem: NSStatusItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Single-instance guard: if another Notchly is already running (e.g. an
@@ -42,6 +43,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Accessory app: no Dock icon, no menu bar takeover.
         NSApp.setActivationPolicy(.accessory)
+
+        // Always-visible off switch: a small menu bar icon whose menu can quit
+        // Notchly. (There's also a "Quit Notchly" button in Settings.) Without
+        // this an accessory app can only be quit via Activity Monitor.
+        setupStatusItem()
 
         notchController = NotchWindowController()
         notchController?.show()
@@ -62,5 +68,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func screenParametersChanged() {
         notchController?.repositionForCurrentScreen()
+    }
+
+    // MARK: - Menu bar off switch
+
+    private func setupStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = item.button {
+            // A little notch-shaped glyph; fall back to a text mark if the symbol
+            // isn't available on this OS.
+            let image = NSImage(systemSymbolName: "rectangle.topthird.inset.filled",
+                                accessibilityDescription: "Notchly")
+            image?.isTemplate = true
+            button.image = image
+            if image == nil { button.title = "◗" }
+            button.toolTip = "Notchly"
+        }
+
+        let menu = NSMenu()
+        let header = NSMenuItem(title: "Notchly is running", action: nil, keyEquivalent: "")
+        header.isEnabled = false
+        menu.addItem(header)
+        menu.addItem(withTitle: "Hover the notch for settings", action: nil, keyEquivalent: "")
+            .isEnabled = false
+        menu.addItem(.separator())
+        let quit = NSMenuItem(title: "Quit Notchly", action: #selector(quitNotchly), keyEquivalent: "q")
+        quit.target = self
+        menu.addItem(quit)
+        item.menu = menu
+        statusItem = item
+    }
+
+    @objc private func quitNotchly() {
+        NSApp.terminate(nil)
     }
 }

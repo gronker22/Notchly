@@ -26,10 +26,31 @@ struct SettingsView: View {
                 notificationsSection
                 Divider()
                 testSection
+                Divider()
+                quitSection
             }
             .padding(20)
         }
         .frame(width: 360, height: 460)
+    }
+
+    // MARK: Quit
+
+    /// An always-available off switch. (There's also a menu bar icon → Quit.)
+    private var quitSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Turn off Notchly").font(.headline)
+            Text("Quits the app completely. Reopen it any time from your Applications folder.")
+                .font(.caption).foregroundStyle(.secondary)
+            Button(role: .destructive) {
+                NSApp.terminate(nil)
+            } label: {
+                Label("Quit Notchly", systemImage: "power")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .tint(.red)
+        }
     }
 
     // MARK: Leagues

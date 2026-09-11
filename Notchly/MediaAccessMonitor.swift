@@ -60,9 +60,10 @@ final class MediaAccessMonitor: ObservableObject {
         if let device = defaultInputDevice() { installMicListener(on: device) }
         installDefaultDeviceListener()
 
-        // 1s poll: backstop for the mic listener + the camera (CoreMediaIO has
-        // no equally convenient block API path here).
-        let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in
+        // 2s poll: backstop for the mic listener (which is already event-driven)
+        // + the camera (CoreMediaIO has no equally convenient block API path).
+        // 2s keeps the mic/camera indicator glanceable while halving the wakeups.
+        let t = Timer(timeInterval: 2.0, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.poll() }
         }
         RunLoop.main.add(t, forMode: .common)

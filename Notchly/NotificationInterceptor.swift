@@ -49,7 +49,10 @@ final class NotificationInterceptor: ObservableObject {
         dbQueue.async { [dbPath] in
             self.lastRecID = Self.currentMaxRecID(dbPath: dbPath) ?? 0
         }
-        let t = Timer(timeInterval: 1.5, repeats: true) { [weak self] _ in
+        // Battery: opening the notification SQLite DB every tick is not free, and
+        // this runs even while collapsed (to catch peeks). 3s still surfaces a
+        // notification near-instantly to a human but halves the disk wakeups.
+        let t = Timer(timeInterval: 3.0, repeats: true) { [weak self] _ in
             self?.dbQueue.async { self?.poll() }
         }
         RunLoop.main.add(t, forMode: .common)

@@ -133,6 +133,11 @@ struct NotchView: View {
         )
         .onChange(of: state.isExpanded) { _, expanded in
             animate(to: expanded)
+            // Battery: modules that only appear in the expanded panel poll only
+            // while it's open. Collapsed, they go quiet (no AppleScript / CoreWLAN
+            // wakeups), which lets the CPU idle instead of running ~15% forever.
+            nowPlaying.setActive(expanded)
+            wifi.setActive(expanded)
         }
         .onPreferenceChange(ExpandedHeightKey.self) { h in
             measuredContentHeight = h
