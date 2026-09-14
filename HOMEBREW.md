@@ -5,15 +5,15 @@ and Apple Silicon Macs, macOS Sonoma or newer).
 
 ## For users
 
-Once the tap is published (see below):
-
 ```bash
-brew install --cask gronker22/notchly/notchly
+brew tap gronker22/notchly
+brew trust gronker22/notchly      # Homebrew 7+ requires trusting third-party taps once
+brew install --cask notchly
 ```
 
-That's it — Notchly installs to `/Applications`, the quarantine flag is cleared
-automatically (the build is unsigned), and you can launch it normally. Update
-later with:
+Notchly installs to `/Applications`. Because the build is **unsigned**, the first
+launch needs a right-click → **Open** (or System Settings → Privacy & Security →
+**Open Anyway**) — the same one-time step as the direct download. Update later with:
 
 ```bash
 brew upgrade --cask notchly
