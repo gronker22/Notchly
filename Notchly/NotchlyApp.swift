@@ -52,6 +52,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         notchController = NotchWindowController()
         notchController?.show()
 
+        // First-run onboarding (once).
+        if !NotchSettings.shared.hasCompletedOnboarding {
+            OnboardingWindowPresenter.show {
+                NotchSettings.shared.hasCompletedOnboarding = true
+            }
+        }
+
         // PHASE 6: prompt for Accessibility up front so window docking works on
         // the first drop (no-op if already granted).
         WindowDockManager.ensureTrusted()

@@ -49,7 +49,7 @@ final class BlackjackGame: ObservableObject {
 
     // Money
     @Published private(set) var chips: Int {
-        didSet { defaults.set(chips, forKey: K.chips); if chips > highScore { highScore = chips } }
+        didSet { defaults.set(chips, forKey: K.chips); if chips > highScore { highScore = chips }; CasinoProgress.shared.recordChips(chips) }
     }
     @Published private(set) var highScore: Int { didSet { defaults.set(highScore, forKey: K.high) } }
     @Published private(set) var bet: Int = 25
@@ -59,6 +59,14 @@ final class BlackjackGame: ObservableObject {
 
     func awardBonus(_ amount: Int) { chips += amount }
     func clearBonus() { bonusAvailable = false }
+
+    /// Claim the shared once-per-day casino bonus (called when the window opens).
+    func applyDailyBonus() {
+        if let (amount, streak) = CasinoProgress.shared.claimDailyBonus() {
+            chips += amount
+            message = "Daily bonus +\(amount) · Day \(streak) streak 🎁"
+        }
+    }
 
     // Settings
     @Published var deckCount: Int { didSet { defaults.set(deckCount, forKey: K.decks); buildDeck() } }

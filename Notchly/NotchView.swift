@@ -40,6 +40,9 @@ struct NotchView: View {
     @ObservedObject var state: NotchState
     let geometry: NotchGeometry
 
+    // Cross-cutting user prefs (per-module toggles, launch at login).
+    @ObservedObject private var settings = NotchSettings.shared
+
     // Now Playing
     @StateObject private var nowPlaying = NowPlayingManager()
 
@@ -51,6 +54,7 @@ struct NotchView: View {
     @StateObject private var media = MediaAccessMonitor()
     @StateObject private var clipboard = ClipboardManager()
     @StateObject private var wifi = WiFiMonitor()
+    @StateObject private var systemStats = SystemStatsManager()
 
     // Live sports
     @StateObject private var sports = SportsManager()
@@ -83,9 +87,8 @@ struct NotchView: View {
 
     /// Is there any collapsed content worth dropping the pill down for?
     private var collapsedHasInfo: Bool {
-        pomodoro.isRunning
-            || media.micActive
-            || media.cameraActive
+        (settings.showPomodoro && pomodoro.isRunning)
+            || (settings.showMediaAccess && (media.micActive || media.cameraActive))
             || (sports.isSportsEnabled && sports.liveGames.contains { $0.state == .live })
     }
 
@@ -136,8 +139,9 @@ struct NotchView: View {
             // Battery: modules that only appear in the expanded panel poll only
             // while it's open. Collapsed, they go quiet (no AppleScript / CoreWLAN
             // wakeups), which lets the CPU idle instead of running ~15% forever.
-            nowPlaying.setActive(expanded)
-            wifi.setActive(expanded)
+            nowPlaying.setActive(expanded && settings.showNowPlaying)
+            wifi.setActive(expanded && settings.showWiFi)
+            systemStats.setActive(expanded && settings.showSystemStats)
         }
         .onPreferenceChange(ExpandedHeightKey.self) { h in
             measuredContentHeight = h
@@ -153,17 +157,16 @@ struct NotchView: View {
             }
         }
         .onAppear {
-            nowPlaying.start()
-            // PHASE 3: start calendar (Pomodoro starts on user action).
-            calendar.start()
-            // PHASE 4: start system-awareness + clipboard.
-            media.start()
-            clipboard.start()
-            wifi.start()
-            // Live sports polling.
-            sports.start()
-            // Incoming notification peek.
-            notifications.start()
+            // Only start the managers for modules the user has enabled — a
+            // disabled module then does zero polling (battery + declutter).
+            if settings.showNowPlaying { nowPlaying.start() }
+            if settings.showCalendar { calendar.start() }   // Pomodoro starts on user action.
+            if settings.showMediaAccess { media.start() }
+            if settings.showClipboard { clipboard.start() }
+            if settings.showWiFi { wifi.start() }
+            if settings.showSystemStats { systemStats.start() }
+            sports.start()                                   // has its own in-panel toggle
+            if settings.showNotifications { notifications.start() }
         }
         .onChange(of: notifications.latest) { _, item in
             if let item { showBanner(item) }
@@ -340,7 +343,7 @@ struct NotchView: View {
                 // LEFT flank
                 HStack(spacing: 5) {
                     Spacer(minLength: 0)
-                    if pomodoro.isRunning {
+                    if settings.showPomodoro && pomodoro.isRunning {
                         Text(pomodoro.remainingString)
                             .font(.system(size: 11, weight: .bold, design: .monospaced))
                             .foregroundStyle(.white)
@@ -355,7 +358,7 @@ struct NotchView: View {
 
                 // RIGHT flank
                 HStack(spacing: 5) {
-                    collapsedMediaIndicator
+                    if settings.showMediaAccess { collapsedMediaIndicator }
                     if sports.isSportsEnabled {
                         SportsTicker(sports: sports)
                     }
@@ -380,50 +383,62 @@ struct NotchView: View {
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 12) {
         HStack(alignment: .top, spacing: 16) {
-            // LEFT column: Pomodoro, Calendar, Network, Clipboard.
+            // LEFT column: Pomodoro, Calendar, Network, Clipboard, System stats.
             VStack(alignment: .leading, spacing: 12) {
-                HStack(alignment: .center, spacing: 14) {
-                    pomodoroControls
-                    Rectangle()
-                        .fill(.white.opacity(0.12))
-                        .frame(width: 1, height: 30)
-                    calendarRow
-                    Spacer(minLength: 0)
+                if settings.showPomodoro || settings.showCalendar {
+                    HStack(alignment: .center, spacing: 14) {
+                        if settings.showPomodoro { pomodoroControls }
+                        if settings.showPomodoro && settings.showCalendar {
+                            Rectangle()
+                                .fill(.white.opacity(0.12))
+                                .frame(width: 1, height: 30)
+                        }
+                        if settings.showCalendar { calendarRow }
+                        Spacer(minLength: 0)
+                    }
                 }
 
-                HStack(alignment: .center, spacing: 12) {
-                    wifiRow
-                    Spacer(minLength: 0)
-                    mediaAccessRow
+                if settings.showWiFi || settings.showMediaAccess {
+                    HStack(alignment: .center, spacing: 12) {
+                        if settings.showWiFi { wifiRow }
+                        Spacer(minLength: 0)
+                        if settings.showMediaAccess { mediaAccessRow }
+                    }
                 }
 
-                clipboardList
+                if settings.showSystemStats { systemStatsRow }
+
+                if settings.showClipboard { clipboardList }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             // RIGHT column: Now Playing — album art on top, then title/artist
             // and the transport controls beneath it.
-            VStack(alignment: .center, spacing: 8) {
-                artworkView
+            if settings.showNowPlaying {
+                VStack(alignment: .center, spacing: 8) {
+                    artworkView
 
-                VStack(spacing: 2) {
-                    Text(nowPlaying.title)
-                        .font(.system(.caption, design: .rounded).weight(.semibold))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                    if !nowPlaying.artist.isEmpty {
-                        Text(nowPlaying.artist)
-                            .font(.system(.caption2, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.6))
-                            .lineLimit(1)
+                    VStack(spacing: 2) {
+                        Text(nowPlaying.title)
+                            .font(.system(.caption, design: .rounded).weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(2)
                             .multilineTextAlignment(.center)
+                        if !nowPlaying.artist.isEmpty {
+                            Text(nowPlaying.artist)
+                                .font(.system(.caption2, design: .rounded))
+                                .foregroundStyle(.white.opacity(0.6))
+                                .lineLimit(1)
+                                .multilineTextAlignment(.center)
+                        }
                     }
-                }
 
-                transportControls
+                    nowPlayingScrubber
+
+                    transportControls
+                }
+                .frame(width: 150)
             }
-            .frame(width: 150)
         }
 
             // Sports section (Live / Yesterday) — only when enabled.
@@ -493,6 +508,105 @@ struct NotchView: View {
         .buttonStyle(.plain)
     }
 
+    // MARK: - Now Playing scrubber + volume (polish)
+
+    @ViewBuilder
+    private var nowPlayingScrubber: some View {
+        if nowPlaying.hasTrack && nowPlaying.duration > 0 {
+            VStack(spacing: 3) {
+                TimelineView(.periodic(from: .now, by: 0.5)) { context in
+                    let pos = nowPlaying.interpolatedPosition(at: context.date)
+                    let frac = min(1, max(0, pos / nowPlaying.duration))
+                    GeometryReader { geo in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.white.opacity(0.18))
+                            Capsule().fill(.white.opacity(0.9))
+                                .frame(width: geo.size.width * frac)
+                        }
+                        .frame(height: 4)
+                        .frame(maxHeight: .infinity, alignment: .center)
+                        .contentShape(Rectangle())
+                        .gesture(
+                            DragGesture(minimumDistance: 0).onEnded { v in
+                                nowPlaying.seek(toFraction: v.location.x / geo.size.width)
+                            }
+                        )
+                        .overlay(alignment: .bottom) {
+                            HStack {
+                                Text(NowPlayingManager.timeString(pos))
+                                Spacer()
+                                Text(NowPlayingManager.timeString(nowPlaying.duration))
+                            }
+                            .font(.system(size: 8, design: .rounded).monospacedDigit())
+                            .foregroundStyle(.white.opacity(0.5))
+                            .offset(y: 10)
+                        }
+                    }
+                    .frame(height: 14)
+                }
+
+                // Volume
+                HStack(spacing: 6) {
+                    Image(systemName: "speaker.fill")
+                        .font(.system(size: 8)).foregroundStyle(.white.opacity(0.5))
+                    Slider(value: Binding(
+                        get: { nowPlaying.volume },
+                        set: { nowPlaying.setVolume($0) }
+                    ), in: 0...1)
+                    .controlSize(.mini)
+                    Image(systemName: "speaker.wave.2.fill")
+                        .font(.system(size: 8)).foregroundStyle(.white.opacity(0.5))
+                }
+            }
+            .frame(width: 140)
+            .padding(.top, 2)
+        }
+    }
+
+    // MARK: - System stats peek (CPU / memory / network)
+
+    private var systemStatsRow: some View {
+        HStack(spacing: 16) {
+            statGauge(icon: "cpu", value: systemStats.cpuUsage,
+                      text: systemStats.cpuPercentString, tint: cpuTint)
+            statGauge(icon: "memorychip", value: systemStats.memUsedFraction,
+                      text: "\(Int((systemStats.memUsedFraction * 100).rounded()))%", tint: .purple)
+            VStack(alignment: .leading, spacing: 2) {
+                Label(SystemStatsManager.rateString(systemStats.netDownBytesPerSec), systemImage: "arrow.down")
+                Label(SystemStatsManager.rateString(systemStats.netUpBytesPerSec), systemImage: "arrow.up")
+            }
+            .font(.system(size: 9, weight: .semibold, design: .rounded).monospacedDigit())
+            .foregroundStyle(.white.opacity(0.7))
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var cpuTint: Color {
+        switch systemStats.cpuUsage {
+        case ..<0.5: return .green
+        case ..<0.8: return .orange
+        default:     return .red
+        }
+    }
+
+    private func statGauge(icon: String, value: Double, text: String, tint: Color) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.6))
+                .frame(width: 16)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(text)
+                    .font(.system(size: 11, weight: .bold, design: .rounded).monospacedDigit())
+                    .foregroundStyle(.white)
+                Capsule().fill(.white.opacity(0.15)).frame(width: 46, height: 4)
+                    .overlay(alignment: .leading) {
+                        Capsule().fill(tint).frame(width: 46 * max(0, min(1, value)), height: 4)
+                    }
+            }
+        }
+    }
+
     // MARK: - PHASE 3: Pomodoro controls (expanded)
 
     @ViewBuilder
@@ -555,6 +669,18 @@ struct NotchView: View {
                             .font(.system(.caption2, design: .rounded).weight(.semibold))
                             .foregroundStyle(calendar.isImminent ? .orange : .white.opacity(0.6))
                     }
+                }
+                if let url = calendar.meetingURL {
+                    Button {
+                        NSWorkspace.shared.open(url)
+                    } label: {
+                        Label("Join", systemImage: "video.fill")
+                            .font(.system(size: 10, weight: .bold, design: .rounded))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 8).padding(.vertical, 3)
+                            .background(Capsule().fill(calendar.isImminent ? Color.green : Color.blue))
+                    }
+                    .buttonStyle(.plain)
                 }
             } else {
                 Text("No upcoming events")
@@ -672,6 +798,15 @@ struct NotchView: View {
                 Text("Clipboard")
                     .font(.system(.caption2, design: .rounded).weight(.semibold))
                     .foregroundStyle(.white.opacity(0.6))
+                Spacer(minLength: 0)
+                if clipboard.hasUnpinned {
+                    Button { clipboard.clearUnpinned() } label: {
+                        Text("Clear")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
 
             if clipboard.items.isEmpty {
@@ -679,31 +814,44 @@ struct NotchView: View {
                     .font(.system(.caption2, design: .rounded))
                     .foregroundStyle(.white.opacity(0.35))
             } else {
-                ForEach(Array(clipboard.items.enumerated()), id: \.offset) { index, item in
-                    Button {
-                        clipboard.copy(item, at: index)
-                    } label: {
-                        HStack {
-                            Text(truncate(item, to: 40))
-                                .font(.system(.caption2, design: .rounded))
-                                .foregroundStyle(.white.opacity(0.85))
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            if clipboard.flashIndex == index {
-                                Text("Copied!")
-                                    .font(.system(size: 9, weight: .bold, design: .rounded))
-                                    .foregroundStyle(.green)
-                                    .transition(.opacity)
-                            }
+                ForEach(clipboard.items) { item in
+                    HStack(spacing: 6) {
+                        Button {
+                            clipboard.togglePin(item)
+                        } label: {
+                            Image(systemName: item.pinned ? "pin.fill" : "pin")
+                                .font(.system(size: 9))
+                                .foregroundStyle(item.pinned ? .yellow : .white.opacity(0.3))
+                                .frame(width: 14)
                         }
-                        .contentShape(Rectangle())
+                        .buttonStyle(.plain)
+                        .help(item.pinned ? "Unpin" : "Pin")
+
+                        Button {
+                            clipboard.copy(item)
+                        } label: {
+                            HStack {
+                                Text(truncate(item.text, to: 38))
+                                    .font(.system(.caption2, design: .rounded))
+                                    .foregroundStyle(.white.opacity(0.85))
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                if clipboard.flashID == item.id {
+                                    Text("Copied!")
+                                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                                        .foregroundStyle(.green)
+                                        .transition(.opacity)
+                                }
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut(duration: 0.15), value: clipboard.flashIndex)
+        .animation(.easeInOut(duration: 0.15), value: clipboard.flashID)
     }
 
     private func truncate(_ s: String, to n: Int) -> String {
@@ -746,6 +894,16 @@ struct NotchView: View {
                 HoldemWindowPresenter.show()
             } label: {
                 Image(systemName: "suit.heart.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Minesweeper.
+            Button {
+                MinesweeperWindowPresenter.show()
+            } label: {
+                Image(systemName: "flag.checkered")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.5))
             }

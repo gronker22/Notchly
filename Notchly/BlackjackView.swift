@@ -398,6 +398,7 @@ enum BlackjackWindowPresenter {
     private static let game = BlackjackGame()
 
     static func show() {
+        game.applyDailyBonus()
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

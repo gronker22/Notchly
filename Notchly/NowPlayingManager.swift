@@ -46,6 +46,9 @@ private struct NowPlayingSnapshot: Sendable {
     let title: String
     let artist: String
     let artworkURL: String?
+    let position: Double     // seconds
+    let duration: Double     // seconds
+    let volume: Double       // 0…1
 }
 
 @MainActor
@@ -56,6 +59,24 @@ final class NowPlayingManager: ObservableObject {
     @Published var artwork: NSImage? = nil
     @Published var isPlaying: Bool = false
     @Published var hasTrack: Bool = false
+
+    // Scrubber / volume (Now Playing polish).
+    @Published var position: Double = 0        // seconds, last sampled from the player
+    @Published var duration: Double = 0        // seconds
+    @Published var volume: Double = 0          // 0…1
+    private var positionSampledAt = Date()
+
+    /// Smoothly-advancing position: interpolate from the last sample while
+    /// playing, so the bar moves between the 1.5s polls instead of stepping.
+    func interpolatedPosition(at date: Date) -> Double {
+        guard duration > 0 else { return 0 }
+        let base = isPlaying ? position + date.timeIntervalSince(positionSampledAt) : position
+        return min(duration, max(0, base))
+    }
+    var progress: Double { duration > 0 ? min(1, max(0, position / duration)) : 0 }
+    static func timeString(_ s: Double) -> String {
+        let t = max(0, Int(s.rounded())); return String(format: "%d:%02d", t / 60, t % 60)
+    }
 
     private var timer: Timer?
     private var active = false
@@ -97,6 +118,30 @@ final class NowPlayingManager: ObservableObject {
     func nextTrack()       { runControl("next track") }
     func previousTrack()   { runControl("previous track") }
 
+    /// Seek to a fraction (0…1) of the current track.
+    func seek(toFraction f: Double) {
+        guard duration > 0 else { return }
+        let target = max(0, min(1, f)) * duration
+        position = target
+        positionSampledAt = Date()
+        scriptQueue.async {
+            guard let player = NowPlayingScripting.pickPlayer() else { return }
+            _ = NowPlayingScripting.runAppleScript(
+                "tell application \"\(player.appName)\" to set player position to \(target)")
+        }
+    }
+
+    /// Set player volume (0…1).
+    func setVolume(_ v: Double) {
+        let vol = Int((max(0, min(1, v)) * 100).rounded())
+        volume = Double(vol) / 100
+        scriptQueue.async {
+            guard let player = NowPlayingScripting.pickPlayer() else { return }
+            _ = NowPlayingScripting.runAppleScript(
+                "tell application \"\(player.appName)\" to set sound volume to \(vol)")
+        }
+    }
+
     private func runControl(_ command: String) {
         scriptQueue.async { [weak self] in
             guard let player = NowPlayingScripting.pickPlayer() else { return }
@@ -126,6 +171,10 @@ final class NowPlayingManager: ObservableObject {
         hasTrack = !snapshot.title.isEmpty
         title = snapshot.title.isEmpty ? "Nothing playing" : snapshot.title
         artist = snapshot.artist
+        duration = snapshot.duration
+        position = snapshot.position
+        positionSampledAt = Date()
+        volume = snapshot.volume
 
         if let urlString = snapshot.artworkURL, !urlString.isEmpty {
             loadArtwork(urlString: urlString)
@@ -144,6 +193,8 @@ final class NowPlayingManager: ObservableObject {
         isPlaying = false
         hasTrack = false
         lastArtworkURL = nil
+        position = 0
+        duration = 0
     }
 
     // MARK: - Artwork
@@ -193,23 +244,30 @@ private enum NowPlayingScripting {
         let script: String
         switch player {
         case .spotify:
-            // Spotify exposes an artwork URL we can fetch.
+            // Spotify exposes an artwork URL we can fetch. Duration is in ms.
             script = """
             tell application "Spotify"
                 set s to player state as text
                 set n to name of current track
                 set a to artist of current track
                 set u to artwork url of current track
-                return s & "\\n" & n & "\\n" & a & "\\n" & u
+                set p to player position
+                set d to (duration of current track) / 1000
+                set v to sound volume
+                return s & "\\n" & n & "\\n" & a & "\\n" & u & "\\n" & p & "\\n" & d & "\\n" & v
             end tell
             """
         case .music:
+            // Apple Music: no artwork URL; duration is already in seconds.
             script = """
             tell application "Music"
                 set s to player state as text
                 set n to name of current track
                 set a to artist of current track
-                return s & "\\n" & n & "\\n" & a
+                set p to player position
+                set d to duration of current track
+                set v to sound volume
+                return s & "\\n" & n & "\\n" & a & "\\n" & p & "\\n" & d & "\\n" & v
             end tell
             """
         }
@@ -218,17 +276,33 @@ private enum NowPlayingScripting {
         let parts = raw.components(separatedBy: "\n")
         guard parts.count >= 3 else { return nil }
 
+        func num(_ i: Int) -> Double {
+            guard i < parts.count else { return 0 }
+            return Double(parts[i].trimmingCharacters(in: .whitespaces).replacingOccurrences(of: ",", with: ".")) ?? 0
+        }
+
         let st = parts[0].trimmingCharacters(in: .whitespaces)
         let trackTitle = parts[1].trimmingCharacters(in: .whitespaces)
         let trackArtist = parts[2].trimmingCharacters(in: .whitespaces)
-        let artURL = (player == .spotify && parts.count >= 4)
-            ? parts[3].trimmingCharacters(in: .whitespaces) : nil
+
+        let artURL: String?
+        let position: Double, duration: Double, volume: Double
+        if player == .spotify {
+            artURL = parts.count >= 4 ? parts[3].trimmingCharacters(in: .whitespaces) : nil
+            position = num(4); duration = num(5); volume = num(6) / 100
+        } else {
+            artURL = nil
+            position = num(3); duration = num(4); volume = num(5) / 100
+        }
 
         return NowPlayingSnapshot(player: player,
                                   isPlaying: st == "playing",
                                   title: trackTitle,
                                   artist: trackArtist,
-                                  artworkURL: artURL)
+                                  artworkURL: artURL,
+                                  position: position,
+                                  duration: duration,
+                                  volume: volume)
     }
 
     static func runAppleScript(_ source: String) -> String? {

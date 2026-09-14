@@ -2,21 +2,28 @@
 //  ClipboardManager.swift
 //  Notchly — Phase 4: Clipboard history
 //
-//  Polls NSPasteboard.changeCount every 0.5s and keeps the last 5 copied
-//  strings (images are ignored for now). Tapping an item writes it back to the
-//  pasteboard and flashes "Copied!".
+//  Polls NSPasteboard.changeCount every 1s and keeps recent copied strings.
+//  Tapping an item writes it back to the pasteboard and flashes "Copied!".
+//  Items can be pinned (kept at the top, never evicted, restored across
+//  launches). Concealed/transient copies (passwords) are never captured.
 //
 
 import AppKit
 import Combine
 
+struct ClipItem: Identifiable, Equatable {
+    let id = UUID()
+    let text: String
+    var pinned: Bool = false
+}
+
 @MainActor
 final class ClipboardManager: ObservableObject {
 
-    /// Most-recent-first, max 5.
-    @Published private(set) var items: [String] = []
-    /// Index of the item that just flashed "Copied!", if any.
-    @Published private(set) var flashIndex: Int?
+    /// Pinned first, then most-recent-first.
+    @Published private(set) var items: [ClipItem] = []
+    /// The item that just flashed "Copied!", if any.
+    @Published private(set) var flashID: UUID?
 
     private let pasteboard = NSPasteboard.general
     private var lastChangeCount: Int
@@ -27,7 +34,9 @@ final class ClipboardManager: ObservableObject {
     // re-ingested as a new "copied" entry.
     private var suppressNextCapture = false
 
-    private let maxItems = 5
+    private let maxUnpinned = 8
+    private let defaults = UserDefaults.standard
+    private let pinnedKey = "notchly.clipboard.pinned"
 
     init() {
         lastChangeCount = pasteboard.changeCount
@@ -36,6 +45,7 @@ final class ClipboardManager: ObservableObject {
     // MARK: - Lifecycle
 
     func start() {
+        loadPinned()
         captureCurrent()
         // Battery: the changeCount check is cheap, but 2×/second is needless. 1s
         // still captures copies well before the user opens the notch to see them.
@@ -75,31 +85,71 @@ final class ClipboardManager: ObservableObject {
         guard let string = pasteboard.string(forType: .string),
               !string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
-        // De-dupe: move an existing match to the front instead of duplicating.
-        items.removeAll { $0 == string }
-        items.insert(string, at: 0)
-        if items.count > maxItems {
-            items = Array(items.prefix(maxItems))
+        // De-dupe: drop an existing copy of this text (keep its pinned state).
+        let wasPinned = items.first { $0.text == string }?.pinned ?? false
+        items.removeAll { $0.text == string }
+        items.insert(ClipItem(text: string, pinned: wasPinned), at: 0)
+        sortPinnedFirst()
+        enforceLimit()
+    }
+
+    // MARK: - Actions
+
+    func copy(_ item: ClipItem) {
+        suppressNextCapture = true
+        pasteboard.clearContents()
+        pasteboard.setString(item.text, forType: .string)
+        lastChangeCount = pasteboard.changeCount
+
+        flashID = item.id
+        flashWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in self?.flashID = nil }
+        flashWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    func togglePin(_ item: ClipItem) {
+        guard let idx = items.firstIndex(where: { $0.id == item.id }) else { return }
+        items[idx].pinned.toggle()
+        sortPinnedFirst()
+        enforceLimit()
+        savePinned()
+    }
+
+    /// Clears unpinned history; pinned items are kept.
+    func clearUnpinned() {
+        items.removeAll { !$0.pinned }
+    }
+
+    var hasUnpinned: Bool { items.contains { !$0.pinned } }
+
+    // MARK: - Ordering / limits / persistence
+
+    private func sortPinnedFirst() {
+        let pinned = items.filter { $0.pinned }
+        let rest = items.filter { !$0.pinned }
+        items = pinned + rest
+    }
+
+    private func enforceLimit() {
+        var unpinned = 0
+        items = items.filter { item in
+            if item.pinned { return true }
+            unpinned += 1
+            return unpinned <= maxUnpinned
         }
     }
 
-    // MARK: - Write-back
+    private func savePinned() {
+        defaults.set(items.filter { $0.pinned }.map { $0.text }, forKey: pinnedKey)
+    }
 
-    func copy(_ item: String, at index: Int) {
-        suppressNextCapture = true
-        pasteboard.clearContents()
-        pasteboard.setString(item, forType: .string)
-        lastChangeCount = pasteboard.changeCount
-
-        // Move it to the front and flash.
-        items.removeAll { $0 == item }
-        items.insert(item, at: 0)
-
-        flashIndex = 0
-        flashWorkItem?.cancel()
-        let work = DispatchWorkItem { [weak self] in self?.flashIndex = nil }
-        flashWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    private func loadPinned() {
+        let saved = defaults.stringArray(forKey: pinnedKey) ?? []
+        // Pinned items first; keep any already-captured unpinned below them.
+        let restored = saved.map { ClipItem(text: $0, pinned: true) }
+        let existingUnpinned = items.filter { !$0.pinned && !saved.contains($0.text) }
+        items = restored + existingUnpinned
     }
 
     deinit { timer?.invalidate() }

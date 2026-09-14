@@ -472,6 +472,7 @@ enum HoldemWindowPresenter {
     private static let game = TexasHoldemGame()
 
     static func show() {
+        game.applyDailyBonus()
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)

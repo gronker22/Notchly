@@ -12,6 +12,8 @@ import AppKit
 
 struct SettingsView: View {
     @ObservedObject var sports: SportsManager
+    @ObservedObject private var settings = NotchSettings.shared
+    @StateObject private var updater = UpdateChecker()
     @State private var newTeam = ""
     @State private var testResult = ""
     @State private var testing = false
@@ -19,11 +21,17 @@ struct SettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                generalSection
+                Divider()
+                modulesSection
+                Divider()
                 leaguesSection
                 Divider()
                 teamsSection
                 Divider()
                 notificationsSection
+                Divider()
+                updatesSection
                 Divider()
                 testSection
                 Divider()
@@ -31,7 +39,61 @@ struct SettingsView: View {
             }
             .padding(20)
         }
-        .frame(width: 360, height: 460)
+        .frame(width: 380, height: 560)
+    }
+
+    // MARK: General
+
+    private var generalSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("General").font(.headline)
+            Toggle("Launch Notchly at login", isOn: $settings.launchAtLogin)
+            Text("Notchly starts automatically when you log in. (May need re-enabling after reinstalling an unsigned build.)")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: Modules
+
+    private var modulesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Modules").font(.headline)
+            Text("Turn off what you don't use — disabled modules stop polling entirely (saves battery) and disappear from the notch.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Now Playing (music)", isOn: $settings.showNowPlaying)
+            Toggle("System stats (CPU / RAM / network)", isOn: $settings.showSystemStats)
+            Toggle("Pomodoro timer", isOn: $settings.showPomodoro)
+            Toggle("Calendar", isOn: $settings.showCalendar)
+            Toggle("Wi-Fi strength", isOn: $settings.showWiFi)
+            Toggle("Mic / camera indicator", isOn: $settings.showMediaAccess)
+            Toggle("Clipboard history", isOn: $settings.showClipboard)
+            Toggle("Notification peek", isOn: $settings.showNotifications)
+            Text("Changes to which modules run take effect after you quit and reopen Notchly.")
+                .font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    // MARK: Updates
+
+    private var updatesSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Updates").font(.headline)
+            HStack {
+                Button {
+                    updater.check()
+                } label: {
+                    Text(updater.checking ? "Checking…" : "Check for updates")
+                }
+                .disabled(updater.checking)
+                Text("Current: v\(AppInfo.version)").font(.caption).foregroundStyle(.tertiary)
+            }
+            if !updater.status.isEmpty {
+                Text(updater.status).font(.caption).foregroundStyle(.secondary)
+            }
+            if let url = updater.updateURL {
+                Button("Download the latest version") { NSWorkspace.shared.open(url) }
+            }
+        }
     }
 
     // MARK: Quit

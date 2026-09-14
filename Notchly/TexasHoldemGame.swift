@@ -76,6 +76,15 @@ final class TexasHoldemGame: ObservableObject {
     @Published var bonusAvailable = false
 
     func awardBonus(_ amount: Int) { players[0].chips += amount; persist() }
+
+    /// Claim the shared once-per-day casino bonus (called when the window opens).
+    func applyDailyBonus() {
+        if let (amount, streak) = CasinoProgress.shared.claimDailyBonus() {
+            players[0].chips += amount
+            persist()
+            message = "Daily bonus +\(amount) · Day \(streak) streak 🎁"
+        }
+    }
     func clearBonus() { bonusAvailable = false }
 
     let smallBlind = 10, bigBlind = 20, startingStack = 1000
@@ -447,6 +456,7 @@ final class TexasHoldemGame: ObservableObject {
         defaults.set(wins, forKey: K.wins)
         defaults.set(losses, forKey: K.losses)
         defaults.set(biggestPot, forKey: K.bigPot)
+        CasinoProgress.shared.recordChips(players[0].chips)
     }
 
     func newGame() {

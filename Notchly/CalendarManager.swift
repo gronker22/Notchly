@@ -19,6 +19,7 @@ final class CalendarManager: ObservableObject {
     @Published private(set) var countdownString: String?  // "in 12m" / "in 2h"
     @Published private(set) var isImminent: Bool = false  // next event < 5 min away
     @Published private(set) var hasEvent: Bool = false
+    @Published private(set) var meetingURL: URL?          // Zoom/Meet/Teams/… if detected
 
     private let store = EKEventStore()
     private var nextEventDate: Date?
@@ -73,12 +74,40 @@ final class CalendarManager: ObservableObject {
             nextEventDate = event.startDate
             nextEventTitle = truncate(event.title ?? "Untitled", to: 24)
             hasEvent = true
+            meetingURL = Self.detectMeetingURL(in: event)
         } else {
             nextEventDate = nil
             nextEventTitle = nil
             hasEvent = false
+            meetingURL = nil
         }
         refresh()
+    }
+
+    // MARK: - Meeting link detection
+
+    private static let meetingHosts = [
+        "zoom.us", "meet.google.com", "teams.microsoft.com", "teams.live.com",
+        "webex.com", "whereby.com", "meet.jit.si", "chime.aws"
+    ]
+
+    private static func isMeeting(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return meetingHosts.contains { host == $0 || host.hasSuffix("." + $0) }
+    }
+
+    /// Look for a video-call link in the event's URL, then its notes/location.
+    private static func detectMeetingURL(in event: EKEvent) -> URL? {
+        if let u = event.url, isMeeting(u) { return u }
+        let text = [event.notes, event.location].compactMap { $0 }.joined(separator: "\n")
+        guard !text.isEmpty,
+              let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        else { return nil }
+        var found: URL?
+        detector.enumerateMatches(in: text, options: [], range: NSRange(text.startIndex..., in: text)) { match, _, stop in
+            if let u = match?.url, isMeeting(u) { found = u; stop.pointee = true }
+        }
+        return found
     }
 
     // MARK: - Countdown
