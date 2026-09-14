@@ -909,6 +909,16 @@ struct NotchView: View {
             }
             .buttonStyle(.plain)
 
+            // Chess.
+            Button {
+                ChessWindowPresenter.show()
+            } label: {
+                Image(systemName: "crown.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
             Spacer(minLength: 0)
 
             Text("Sports")
