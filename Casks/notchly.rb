@@ -1,6 +1,6 @@
 cask "notchly" do
-  version "1.4.3"
-  sha256 "ba77f65ce02b90cd981098d5dfe792290d90ba0c77709534a56423abcd6afcac"
+  version "1.4.4"
+  sha256 "8671d907ebc2c75f1482591c2214cc53edbd85dfc2d2e8f8df2bc25cab5d2fd7"
 
   # Universal build (Intel + Apple Silicon).
   url "https://github.com/gronker22/Notchly/releases/download/v#{version}/Notchly-Intel-Universal.zip"
@@ -12,9 +12,14 @@ cask "notchly" do
 
   app "Notchly.app"
 
-  # NOTE: Notchly is unsigned / not notarized, so the first launch needs a
-  # right-click → Open (or System Settings → Privacy & Security → Open Anyway).
-  # This is the same one-time step as the direct download.
+  # Notchly is unsigned / not notarized. Strip the quarantine flag Homebrew adds
+  # so it launches normally instead of forcing a right-click -> Open the first
+  # time. (This tap already requires a one-time `brew trust`, so this adds no
+  # extra step for the user.)
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-dr", "com.apple.quarantine", "#{appdir}/Notchly.app"]
+  end
 
   uninstall quit: "com.notchly.Notchly"
 

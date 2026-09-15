@@ -12,7 +12,7 @@ import Combine
 
 /// The current app version. Bump this when cutting a release tag (vX.Y.Z).
 enum AppInfo {
-    static let version = "1.4.3"
+    static let version = "1.4.4"
     static let releasesURL = URL(string: "https://github.com/gronker22/Notchly/releases")!
     static let latestAPI = URL(string: "https://api.github.com/repos/gronker22/Notchly/releases/latest")!
 }

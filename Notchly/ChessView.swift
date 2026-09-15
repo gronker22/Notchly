@@ -2,6 +2,11 @@
 //  ChessView.swift
 //  Notchly — Chess UI + game controller
 //
+//  Pieces are rendered as a separate overlay layer (one view per physical piece,
+//  keyed by a stable id) so a move animates the piece SLIDING from square to
+//  square, captures fade + shrink out, and the selected piece lifts. The AI takes
+//  a short, natural "thinking" pause before it moves.
+//
 
 import SwiftUI
 import AppKit
@@ -19,7 +24,17 @@ final class ChessGame: ObservableObject {
         var label: String { rawValue.capitalized }
     }
 
+    /// A physical piece the UI tracks across moves so it can animate sliding.
+    struct BoardPiece: Identifiable, Equatable {
+        let id = UUID()
+        var kind: PieceKind
+        var color: ChessColor
+        var square: Int
+        var captured = false
+    }
+
     @Published private(set) var position = Position.initial
+    @Published private(set) var renderPieces: [BoardPiece] = []
     @Published private(set) var status: Status = .playing
     @Published private(set) var selected: Int?
     @Published private(set) var legalTargets: Set<Int> = []
@@ -36,11 +51,13 @@ final class ChessGame: ObservableObject {
 
     let humanColor: ChessColor = .white
     private let defaults = UserDefaults.standard
+    static let slide = Animation.spring(response: 0.38, dampingFraction: 0.78)
 
     init() {
         wins = defaults.integer(forKey: "notchly.chess.wins")
         losses = defaults.integer(forKey: "notchly.chess.losses")
         draws = defaults.integer(forKey: "notchly.chess.draws")
+        rebuildPieces()
     }
 
     var inCheckSquare: Int? {
@@ -56,6 +73,7 @@ final class ChessGame: ObservableObject {
         pendingPromotion = nil
         thinking = false
         message = "Your move"
+        rebuildPieces()
     }
 
     func tap(_ sq: Int) {
@@ -91,11 +109,77 @@ final class ChessGame: ObservableObject {
     private func legalFrom(_ sq: Int) -> [ChessMove] { position.legalMoves().filter { $0.from == sq } }
     private func clearSelection() { selected = nil; legalTargets = [] }
 
+    // MARK: Applying + animating
+
     private func apply(_ m: ChessMove) {
+        animateMove(m)                 // uses the pre-move position
         position = position.makeRaw(m)
         lastMove = m
         updateStatus()
+        // Safety net: if the cosmetic layer ever drifts from the engine, snap it.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.42) { [weak self] in self?.reconcileIfNeeded() }
     }
+
+    private func animateMove(_ m: ChessMove) {
+        let mover = position.side   // side to move (pre-makeRaw)
+
+        // Remove the captured piece (regular capture or en passant).
+        if m.flag == .enPassant {
+            let capSq = m.to + (mover == .white ? -8 : 8)
+            fadeCapture(at: capSq)
+        } else if renderPieces.contains(where: { $0.square == m.to && !$0.captured }) {
+            fadeCapture(at: m.to)
+        }
+
+        // Slide the moving piece.
+        if let mi = renderPieces.firstIndex(where: { $0.square == m.from && !$0.captured }) {
+            let id = renderPieces[mi].id
+            withAnimation(Self.slide) { renderPieces[mi].square = m.to }
+            if let promo = m.promotion {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.24) { [weak self] in
+                    guard let self, let i = self.renderPieces.firstIndex(where: { $0.id == id }) else { return }
+                    withAnimation(.easeInOut(duration: 0.15)) { self.renderPieces[i].kind = promo }
+                }
+            }
+        }
+
+        // Castling: slide the rook too.
+        if m.flag == .castleKing || m.flag == .castleQueen {
+            let (rf, rt): (Int, Int)
+            switch m.to {
+            case 6:  (rf, rt) = (7, 5)
+            case 2:  (rf, rt) = (0, 3)
+            case 62: (rf, rt) = (63, 61)
+            default: (rf, rt) = (56, 59)   // 58
+            }
+            if let ri = renderPieces.firstIndex(where: { $0.square == rf && !$0.captured }) {
+                withAnimation(Self.slide) { renderPieces[ri].square = rt }
+            }
+        }
+    }
+
+    private func fadeCapture(at square: Int) {
+        guard let idx = renderPieces.firstIndex(where: { $0.square == square && !$0.captured }) else { return }
+        let id = renderPieces[idx].id
+        withAnimation(.easeOut(duration: 0.22)) { renderPieces[idx].captured = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.28) { [weak self] in
+            self?.renderPieces.removeAll { $0.id == id }
+        }
+    }
+
+    private func rebuildPieces() {
+        renderPieces = (0..<64).compactMap { sq in
+            position.squares[sq].map { BoardPiece(kind: $0.kind, color: $0.color, square: sq) }
+        }
+    }
+
+    private func reconcileIfNeeded() {
+        let liveSquares = Set(renderPieces.filter { !$0.captured }.map { $0.square })
+        let occupied = Set((0..<64).filter { position.squares[$0] != nil })
+        if liveSquares != occupied { rebuildPieces() }
+    }
+
+    // MARK: AI
 
     private func afterHuman() {
         guard status == .playing else { return }
@@ -109,15 +193,22 @@ final class ChessGame: ObservableObject {
         let pos = position
         let depth = difficulty.depth
         Task.detached(priority: .userInitiated) {
+            let t0 = Date()
             let move = ChessAI.bestMove(for: pos, depth: depth)
+            // A natural pause so the AI doesn't snap instantly.
+            let minThink = Double.random(in: 0.55...1.0)
+            let elapsed = Date().timeIntervalSince(t0)
+            if elapsed < minThink {
+                try? await Task.sleep(nanoseconds: UInt64((minThink - elapsed) * 1_000_000_000))
+            }
             await MainActor.run {
                 self.thinking = false
-                if let move {
-                    self.apply(move)
-                }
+                if let move { self.apply(move) }
             }
         }
     }
+
+    // MARK: Status
 
     private func updateStatus() {
         if position.isCheckmate {
@@ -144,11 +235,46 @@ final class ChessGame: ObservableObject {
     }
 }
 
-// MARK: - View
+// MARK: - Piece view (crisp, outlined, shaded)
+
+struct ChessPieceView: View {
+    let kind: PieceKind
+    let color: ChessColor
+    let size: CGFloat
+
+    private static let outlineOffsets: [CGSize] = {
+        let d: CGFloat = 1.1
+        return [(-d,-d),(0,-d),(d,-d),(-d,0),(d,0),(-d,d),(0,d),(d,d)].map { CGSize(width: $0.0, height: $0.1) }
+    }()
+
+    var body: some View {
+        let isWhite = color == .white
+        let bodyFill = LinearGradient(
+            colors: isWhite ? [Color(white: 1.0), Color(white: 0.78)]
+                            : [Color(white: 0.38), Color(white: 0.06)],
+            startPoint: .top, endPoint: .bottom)
+        let outline = isWhite ? Color.black.opacity(0.8) : Color(white: 0.85).opacity(0.55)
+
+        ZStack {
+            ForEach(0..<Self.outlineOffsets.count, id: \.self) { i in
+                Text(kind.glyph).offset(Self.outlineOffsets[i]).foregroundStyle(outline)
+            }
+            Text(kind.glyph).foregroundStyle(bodyFill)
+        }
+        .font(.system(size: size))
+        .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: 2)
+    }
+}
+
+// MARK: - Board view
 
 struct ChessView: View {
     @ObservedObject var game: ChessGame
     private let cell: CGFloat = 52
+    private var board: CGFloat { cell * 8 }
+
+    private let lightSquare = Color(red: 0.92, green: 0.93, blue: 0.82)
+    private let darkSquare  = Color(red: 0.47, green: 0.58, blue: 0.34)
 
     var body: some View {
         VStack(spacing: 14) {
@@ -173,57 +299,78 @@ struct ChessView: View {
                 Text(game.message)
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(statusTint)
+                    .animation(.easeInOut, value: game.message)
             }
         }
-        .frame(width: cell * 8)
+        .frame(width: board)
     }
 
     private var boardView: some View {
-        VStack(spacing: 0) {
-            ForEach(0..<8, id: \.self) { row in
-                HStack(spacing: 0) {
-                    ForEach(0..<8, id: \.self) { col in
-                        squareView(rank: 7 - row, file: col)
-                    }
-                }
-            }
+        ZStack(alignment: .topLeading) {
+            squaresGrid
+            piecesLayer.allowsHitTesting(false)
         }
+        .frame(width: board, height: board)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.15), lineWidth: 1))
         .overlay(alignment: .center) { promotionOverlay }
     }
 
-    private func squareView(rank: Int, file: Int) -> some View {
+    private var squaresGrid: some View {
+        VStack(spacing: 0) {
+            ForEach(0..<8, id: \.self) { row in
+                HStack(spacing: 0) {
+                    ForEach(0..<8, id: \.self) { col in
+                        squareCell(rank: 7 - row, file: col)
+                    }
+                }
+            }
+        }
+    }
+
+    private func squareCell(rank: Int, file: Int) -> some View {
         let sq = rank * 8 + file
         let isLight = (rank + file) % 2 == 1
-        let base = isLight ? Color(red: 0.90, green: 0.87, blue: 0.80) : Color(red: 0.40, green: 0.52, blue: 0.38)
         let isTarget = game.legalTargets.contains(sq)
         let isLast = game.lastMove.map { $0.from == sq || $0.to == sq } ?? false
+        let occupied = game.position.squares[sq] != nil
 
         return ZStack {
-            base
-            if isLast { Color.yellow.opacity(0.28) }
-            if game.selected == sq { Color.yellow.opacity(0.5) }
-            if game.inCheckSquare == sq { Color.red.opacity(0.55) }
-
-            if let piece = game.position.squares[sq] {
-                Text(piece.kind.glyph)
-                    .font(.system(size: 34))
-                    .foregroundStyle(piece.color == .white ? .white : .black)
-                    .shadow(color: piece.color == .white ? .black.opacity(0.55) : .white.opacity(0.35), radius: 0.5)
+            (isLight ? lightSquare : darkSquare)
+            if isLast { Color.yellow.opacity(0.30) }
+            if game.selected == sq { Color.yellow.opacity(0.45) }
+            if game.inCheckSquare == sq {
+                Circle().fill(RadialGradient(colors: [.red.opacity(0.85), .red.opacity(0.0)],
+                                             center: .center, startRadius: 2, endRadius: cell * 0.6))
             }
             if isTarget {
-                if game.position.squares[sq] == nil {
-                    Circle().fill(.black.opacity(0.28)).frame(width: 16, height: 16)
+                if occupied {
+                    Circle().strokeBorder(.black.opacity(0.32), lineWidth: 5).padding(3)
+                        .transition(.opacity)
                 } else {
-                    Circle().strokeBorder(.black.opacity(0.35), lineWidth: 4)
-                        .padding(3)
+                    Circle().fill(.black.opacity(0.24)).frame(width: 16, height: 16)
+                        .transition(.scale.combined(with: .opacity))
                 }
             }
         }
         .frame(width: cell, height: cell)
         .contentShape(Rectangle())
         .onTapGesture { game.tap(sq) }
+        .animation(.easeInOut(duration: 0.15), value: game.legalTargets)
+    }
+
+    private var piecesLayer: some View {
+        ZStack {
+            ForEach(game.renderPieces) { piece in
+                ChessPieceView(kind: piece.kind, color: piece.color, size: 38)
+                    .scaleEffect(piece.captured ? 0.4 : (game.selected == piece.square ? 1.16 : 1.0))
+                    .opacity(piece.captured ? 0 : 1)
+                    .position(x: (CGFloat(piece.square & 7) + 0.5) * cell,
+                              y: (CGFloat(7 - (piece.square >> 3)) + 0.5) * cell)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.6), value: game.selected)
+            }
+        }
+        .frame(width: board, height: board)
     }
 
     @ViewBuilder
@@ -234,11 +381,9 @@ struct ChessView: View {
                 HStack(spacing: 10) {
                     ForEach([PieceKind.queen, .rook, .bishop, .knight], id: \.rawValue) { kind in
                         Button { game.completePromotion(kind) } label: {
-                            Text(kind.glyph)
-                                .font(.system(size: 34))
-                                .foregroundStyle(.white)
+                            ChessPieceView(kind: kind, color: game.humanColor, size: 34)
                                 .frame(width: 52, height: 52)
-                                .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.15)))
+                                .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.12)))
                         }
                         .buttonStyle(.plain)
                     }
@@ -246,6 +391,7 @@ struct ChessView: View {
             }
             .padding(20)
             .background(RoundedRectangle(cornerRadius: 16).fill(.black.opacity(0.85)))
+            .transition(.scale.combined(with: .opacity))
         }
     }
 
@@ -269,7 +415,7 @@ struct ChessView: View {
             }
             .buttonStyle(.plain)
         }
-        .frame(width: cell * 8)
+        .frame(width: board)
     }
 
     private var statusTint: Color {
