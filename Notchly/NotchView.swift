@@ -513,36 +513,36 @@ struct NotchView: View {
     @ViewBuilder
     private var nowPlayingScrubber: some View {
         if nowPlaying.hasTrack && nowPlaying.duration > 0 {
-            VStack(spacing: 3) {
+            VStack(spacing: 7) {
                 TimelineView(.periodic(from: .now, by: 0.5)) { context in
                     let pos = nowPlaying.interpolatedPosition(at: context.date)
                     let frac = min(1, max(0, pos / nowPlaying.duration))
-                    GeometryReader { geo in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(.white.opacity(0.18))
-                            Capsule().fill(.white.opacity(0.9))
-                                .frame(width: geo.size.width * frac)
-                        }
-                        .frame(height: 4)
-                        .frame(maxHeight: .infinity, alignment: .center)
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0).onEnded { v in
-                                nowPlaying.seek(toFraction: v.location.x / geo.size.width)
+                    VStack(spacing: 3) {
+                        GeometryReader { geo in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(.white.opacity(0.18))
+                                Capsule().fill(.white.opacity(0.9))
+                                    .frame(width: geo.size.width * frac)
                             }
-                        )
-                        .overlay(alignment: .bottom) {
-                            HStack {
-                                Text(NowPlayingManager.timeString(pos))
-                                Spacer()
-                                Text(NowPlayingManager.timeString(nowPlaying.duration))
-                            }
-                            .font(.system(size: 8, design: .rounded).monospacedDigit())
-                            .foregroundStyle(.white.opacity(0.5))
-                            .offset(y: 10)
+                            .frame(height: 4)
+                            .frame(maxHeight: .infinity, alignment: .center)
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0).onEnded { v in
+                                    nowPlaying.seek(toFraction: v.location.x / geo.size.width)
+                                }
+                            )
                         }
+                        .frame(height: 10)
+                        // Timestamps on their own row, cleanly below the bar.
+                        HStack {
+                            Text(NowPlayingManager.timeString(pos))
+                            Spacer()
+                            Text(NowPlayingManager.timeString(nowPlaying.duration))
+                        }
+                        .font(.system(size: 8, design: .rounded).monospacedDigit())
+                        .foregroundStyle(.white.opacity(0.5))
                     }
-                    .frame(height: 14)
                 }
 
                 // Volume

@@ -11,6 +11,7 @@
 import SwiftUI
 import AppKit
 import Combine
+import MultipeerConnectivity
 
 // MARK: - Controller
 
@@ -49,9 +50,28 @@ final class ChessGame: ObservableObject {
 
     struct PendingPromotion { let from: Int; let to: Int }
 
-    let humanColor: ChessColor = .white
+    // Multiplayer.
+    enum Opponent { case ai, humanLive, humanCode }
+    @Published private(set) var opponent: Opponent = .ai
+    @Published private(set) var localColor: ChessColor = .white
+    @Published private(set) var liveConnected = false
+    @Published var opponentName = ""
+    /// Set by the live (MultipeerConnectivity) transport to broadcast my moves.
+    var onLocalMove: ((ChessMove) -> Void)?
+    var humanColor: ChessColor { localColor }   // back-compat for the view
+
     private let defaults = UserDefaults.standard
     static let slide = Animation.spring(response: 0.38, dampingFraction: 0.78)
+
+    var canLocalMove: Bool {
+        guard status == .playing, !thinking, pendingPromotion == nil else { return false }
+        switch opponent {
+        case .ai:        return position.side == localColor
+        case .humanLive: return liveConnected && position.side == localColor
+        case .humanCode: return position.side == localColor
+        }
+    }
+    var isMyTurn: Bool { position.side == localColor }
 
     init() {
         wins = defaults.integer(forKey: "notchly.chess.wins")
@@ -77,7 +97,7 @@ final class ChessGame: ObservableObject {
     }
 
     func tap(_ sq: Int) {
-        guard status == .playing, position.side == humanColor, !thinking, pendingPromotion == nil else { return }
+        guard canLocalMove else { return }
         if let sel = selected {
             if sq == sel { clearSelection(); return }
             let candidates = legalFrom(sel).filter { $0.to == sq }
@@ -85,12 +105,12 @@ final class ChessGame: ObservableObject {
                 if candidates.contains(where: { $0.isPromotion }) {
                     pendingPromotion = PendingPromotion(from: sel, to: sq)
                 } else {
-                    apply(candidates[0]); afterHuman()
+                    apply(candidates[0]); afterLocalMove(candidates[0])
                 }
                 clearSelection(); return
             }
         }
-        if let p = position.squares[sq], p.color == humanColor {
+        if let p = position.squares[sq], p.color == localColor {
             selected = sq
             legalTargets = Set(legalFrom(sq).map { $0.to })
         } else {
@@ -101,7 +121,7 @@ final class ChessGame: ObservableObject {
     func completePromotion(_ kind: PieceKind) {
         guard let pp = pendingPromotion else { return }
         if let m = legalFrom(pp.from).first(where: { $0.to == pp.to && $0.promotion == kind }) {
-            apply(m); afterHuman()
+            apply(m); afterLocalMove(m)
         }
         pendingPromotion = nil
     }
@@ -181,9 +201,62 @@ final class ChessGame: ObservableObject {
 
     // MARK: AI
 
-    private func afterHuman() {
+    private func afterLocalMove(_ m: ChessMove) {
         guard status == .playing else { return }
-        triggerAI()
+        switch opponent {
+        case .ai:        triggerAI()
+        case .humanLive: onLocalMove?(m)          // send to the connected peer
+        case .humanCode: break                     // player copies the code manually
+        }
+    }
+
+    // MARK: Multiplayer control
+
+    func startAIGame() {
+        opponent = .ai; localColor = .white; liveConnected = false; opponentName = ""
+        newGame()
+    }
+
+    func startLiveGame(localColor: ChessColor, opponentName: String) {
+        opponent = .humanLive
+        self.localColor = localColor
+        self.opponentName = opponentName
+        liveConnected = true
+        newGame()
+    }
+
+    func setLiveConnected(_ connected: Bool) {
+        liveConnected = connected
+        if !connected, opponent == .humanLive { message = "Opponent disconnected" }
+    }
+
+    /// Apply a move received from the live opponent (validated against the rules).
+    func applyRemoteMove(_ m: ChessMove) {
+        guard status == .playing,
+              legalFrom(m.from).contains(where: { $0.to == m.to && $0.promotion == m.promotion })
+        else { return }
+        apply(m)
+    }
+
+    /// Play-by-code: the current position as a shareable code.
+    func exportCode() -> String { position.toFEN() }
+
+    /// Play-by-code: load a code pasted from the opponent — it becomes your turn.
+    @discardableResult
+    func importCode(_ code: String) -> Bool {
+        guard let parsed = Position(fen: code.trimmingCharacters(in: .whitespacesAndNewlines)) else { return false }
+        opponent = .humanCode
+        liveConnected = false
+        opponentName = "Remote"
+        position = parsed
+        localColor = parsed.side
+        lastMove = nil
+        clearSelection()
+        pendingPromotion = nil
+        thinking = false
+        rebuildPieces()
+        updateStatus()
+        return true
     }
 
     private func triggerAI() {
@@ -214,18 +287,31 @@ final class ChessGame: ObservableObject {
         if position.isCheckmate {
             let winner = position.side.opposite
             status = .checkmate(winner: winner)
-            if winner == humanColor { wins += 1; message = "Checkmate — you win! 🏆" }
-            else { losses += 1; message = "Checkmate — the AI wins." }
+            if winner == localColor { wins += 1; message = "Checkmate — you win! 🏆" }
+            else { losses += 1; message = "Checkmate — \(loserFacingWinnerName) wins." }
             persist()
         } else if position.isStalemate {
             status = .stalemate; draws += 1; message = "Stalemate — it's a draw."; persist()
         } else if position.halfmove >= 100 || position.isInsufficientMaterial {
             status = .draw; draws += 1; message = "Draw."; persist()
         } else if position.isInCheck(position.side) {
-            message = position.side == humanColor ? "You're in check!" : "AI is in check"
+            message = isMyTurn ? "You're in check!" : "\(turnHolderName) is in check"
+        } else if isMyTurn {
+            message = "Your move"
         } else {
-            message = position.side == humanColor ? "Your move" : "AI to move"
+            switch opponent {
+            case .ai:        message = "AI to move"
+            case .humanLive: message = "Waiting for \(opponentName)…"
+            case .humanCode: message = "Your move is ready — send the code"
+            }
         }
+    }
+
+    private var turnHolderName: String {
+        opponent == .ai ? "AI" : (opponentName.isEmpty ? "Opponent" : opponentName)
+    }
+    private var loserFacingWinnerName: String {
+        opponent == .ai ? "the AI" : (opponentName.isEmpty ? "your opponent" : opponentName)
     }
 
     private func persist() {
@@ -270,6 +356,10 @@ struct ChessPieceView: View {
 
 struct ChessView: View {
     @ObservedObject var game: ChessGame
+    @ObservedObject var multipeer: ChessMultipeer
+    @ObservedObject private var settings = NotchSettings.shared
+    @State private var showMultiplayer = false
+    @State private var codeMessage: String?
     private let cell: CGFloat = 52
     private var board: CGFloat { cell * 8 }
 
@@ -284,25 +374,140 @@ struct ChessView: View {
         }
         .padding(20)
         .frame(width: 460, height: 640, alignment: .top)
+        .sheet(isPresented: $showMultiplayer) { multiplayerSheet }
+        .alert("Chess invite", isPresented: inviteBinding, presenting: multipeer.incomingInvite) { invite in
+            Button("Accept") { invite.respond(true); multipeer.incomingInvite = nil }
+            Button("Decline", role: .cancel) { invite.respond(false); multipeer.incomingInvite = nil }
+        } message: { invite in
+            Text("\(invite.peerName) wants to play chess with you.")
+        }
+    }
+
+    private var inviteBinding: Binding<Bool> {
+        Binding(
+            get: { multipeer.incomingInvite != nil },
+            set: { if !$0 { multipeer.incomingInvite?.respond(false); multipeer.incomingInvite = nil } }
+        )
     }
 
     private var header: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Chess").font(.system(.title2, design: .rounded).weight(.black)).foregroundStyle(.white)
-                Text("W \(game.wins) · L \(game.losses) · D \(game.draws)")
-                    .font(.system(size: 10, design: .rounded)).foregroundStyle(.white.opacity(0.5))
+                if game.opponent == .ai {
+                    Text("W \(game.wins) · L \(game.losses) · D \(game.draws)")
+                        .font(.system(size: 10, design: .rounded)).foregroundStyle(.white.opacity(0.5))
+                } else {
+                    Text("vs \(game.opponentName.isEmpty ? "opponent" : game.opponentName) · you're \(game.localColor == .white ? "White" : "Black")")
+                        .font(.system(size: 10, design: .rounded)).foregroundStyle(.cyan.opacity(0.8))
+                }
             }
             Spacer()
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 if game.thinking { ProgressView().controlSize(.small).tint(.white) }
                 Text(game.message)
                     .font(.system(.callout, design: .rounded).weight(.semibold))
                     .foregroundStyle(statusTint)
                     .animation(.easeInOut, value: game.message)
+                Button { showMultiplayer = true } label: {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(game.opponent == .ai ? .white.opacity(0.6) : .cyan)
+                }
+                .buttonStyle(.plain)
+                .help("Multiplayer")
             }
         }
         .frame(width: board)
+    }
+
+    // MARK: Multiplayer sheet
+
+    private var multiplayerSheet: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Multiplayer chess").font(.system(.title2, design: .rounded).weight(.bold))
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Your name").font(.headline)
+                    TextField("Name others see", text: $settings.multiplayerName)
+                        .textFieldStyle(.roundedBorder)
+                }
+
+                Divider()
+
+                // Option A — nearby
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Play someone nearby").font(.headline)
+                    Text("Both Macs must be on the same Wi-Fi / network.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    Toggle("Available to nearby players", isOn: Binding(
+                        get: { multipeer.online },
+                        set: { $0 ? multipeer.goOnline() : multipeer.goOffline() }))
+                    Text(multipeer.statusText).font(.caption).foregroundStyle(.secondary)
+                    if multipeer.online {
+                        if multipeer.nearby.isEmpty {
+                            Text("Searching for players…").font(.caption).foregroundStyle(.tertiary)
+                        } else {
+                            ForEach(multipeer.nearby, id: \.self) { peer in
+                                HStack {
+                                    Image(systemName: "person.crop.circle.fill").foregroundStyle(.cyan)
+                                    Text(peer.displayName)
+                                    Spacer()
+                                    Button("Invite") { multipeer.invite(peer) }
+                                        .buttonStyle(.borderedProminent).controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Divider()
+
+                // Option B — play by code
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Play by code (anywhere)").font(.headline)
+                    Text("No network needed. After your move, copy your code and send it (iMessage, Discord…). Paste your friend's code to load their move.")
+                        .font(.caption).foregroundStyle(.secondary)
+                    HStack {
+                        Button { copyCode() } label: { Label("Copy my code", systemImage: "doc.on.doc") }
+                        Button { pasteCode() } label: { Label("Paste opponent's code", systemImage: "arrow.down.doc") }
+                    }
+                    if let m = codeMessage {
+                        Text(m).font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+
+                Divider()
+
+                HStack {
+                    Button("Back to solo (vs AI)") { game.startAIGame(); codeMessage = nil }
+                    Spacer()
+                    Button("Done") { showMultiplayer = false }.keyboardShortcut(.defaultAction)
+                }
+            }
+            .padding(24)
+            .frame(width: 420)
+        }
+        .frame(width: 420, height: 560)
+    }
+
+    private func copyCode() {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(game.exportCode(), forType: .string)
+        codeMessage = "Your code is copied — send it to your friend."
+    }
+
+    private func pasteCode() {
+        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else {
+            codeMessage = "Clipboard is empty — copy your friend's code first."; return
+        }
+        if game.importCode(s) {
+            codeMessage = "Loaded — it's your move."
+            showMultiplayer = false
+        } else {
+            codeMessage = "That doesn't look like a valid game code."
+        }
     }
 
     private var boardView: some View {
@@ -402,12 +607,13 @@ struct ChessView: View {
             }
             .pickerStyle(.segmented)
             .frame(width: 220)
-            .disabled(game.thinking)
+            .disabled(game.thinking || game.opponent != .ai)
+            .opacity(game.opponent == .ai ? 1 : 0.4)
 
             Spacer()
 
-            Button { game.newGame() } label: {
-                Label("New game", systemImage: "arrow.clockwise")
+            Button { game.startAIGame() } label: {
+                Label(game.opponent == .ai ? "New game" : "Leave · new game", systemImage: "arrow.clockwise")
                     .font(.system(.callout, design: .rounded).weight(.bold))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 14).padding(.vertical, 8)
@@ -433,15 +639,21 @@ struct ChessView: View {
 enum ChessWindowPresenter {
     private static var window: NSWindow?
     private static let game = ChessGame()
+    private static var multipeer: ChessMultipeer?
 
     static func show() {
+        if multipeer == nil {
+            let mp = ChessMultipeer(displayName: NotchSettings.shared.multiplayerName)
+            mp.game = game
+            multipeer = mp
+        }
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let w = GameWindow.make(title: "Chess", design: CGSize(width: 460, height: 640)) {
-            ChessView(game: game)
+            ChessView(game: game, multipeer: multipeer!)
         }
         window = w
         w.makeKeyAndOrderFront(nil)
