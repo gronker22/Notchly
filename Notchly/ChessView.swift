@@ -357,8 +357,10 @@ struct ChessPieceView: View {
 struct ChessView: View {
     @ObservedObject var game: ChessGame
     @ObservedObject var multipeer: ChessMultipeer
+    @ObservedObject var relay: ChessRelay
     @ObservedObject private var settings = NotchSettings.shared
     @State private var showMultiplayer = false
+    @State private var joinCode = ""
     @State private var codeMessage: String?
     private let cell: CGFloat = 52
     private var board: CGFloat { cell * 8 }
@@ -380,6 +382,12 @@ struct ChessView: View {
             Button("Decline", role: .cancel) { invite.respond(false); multipeer.incomingInvite = nil }
         } message: { invite in
             Text("\(invite.peerName) wants to play chess with you.")
+        }
+        .onChange(of: relay.phase) { _, phase in
+            if phase == .connected { showMultiplayer = false }
+        }
+        .onChange(of: multipeer.connectedName) { _, name in
+            if name != nil { showMultiplayer = false }
         }
     }
 
@@ -464,15 +472,50 @@ struct ChessView: View {
 
                 Divider()
 
-                // Option B — play by code
+                // Option B — online via a one-time room code
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Play by code (anywhere)").font(.headline)
-                    Text("No network needed. After your move, copy your code and send it (iMessage, Discord…). Paste your friend's code to load their move.")
+                    Text("Play online (room code)").font(.headline)
+                    Text("One code to join the same game, then play live over the internet — anywhere. (Uses a free public relay; a random code is your privacy.)")
                         .font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button { copyCode() } label: { Label("Copy my code", systemImage: "doc.on.doc") }
-                        Button { pasteCode() } label: { Label("Paste opponent's code", systemImage: "arrow.down.doc") }
+
+                    switch relay.phase {
+                    case .idle:
+                        Button { _ = relay.host(name: settings.multiplayerName) } label: {
+                            Label("Create a game", systemImage: "plus.circle.fill")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        HStack {
+                            TextField("Enter a friend's code", text: $joinCode)
+                                .textFieldStyle(.roundedBorder)
+                                .onSubmit { joinRoom() }
+                            Button("Join") { joinRoom() }
+                                .disabled(joinCode.trimmingCharacters(in: .whitespaces).count != 5)
+                        }
+
+                    case .hosting:
+                        if let code = relay.roomCode {
+                            HStack(spacing: 10) {
+                                Text(code)
+                                    .font(.system(size: 30, weight: .black, design: .monospaced))
+                                    .foregroundStyle(.cyan)
+                                Button { copyRoomCode(code) } label: { Image(systemName: "doc.on.doc") }
+                            }
+                        }
+                        Text(relay.statusText).font(.caption).foregroundStyle(.secondary)
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { relay.leave() }
+
+                    case .joining:
+                        Text(relay.statusText).font(.caption).foregroundStyle(.secondary)
+                        ProgressView().controlSize(.small)
+                        Button("Cancel") { relay.leave() }
+
+                    case .connected:
+                        Label("Playing \(relay.opponentName)", systemImage: "dot.radiowaves.left.and.right")
+                            .foregroundStyle(.green)
+                        Button("Leave game") { relay.leave(); game.startAIGame() }
                     }
+
                     if let m = codeMessage {
                         Text(m).font(.caption).foregroundStyle(.secondary)
                     }
@@ -492,22 +535,16 @@ struct ChessView: View {
         .frame(width: 420, height: 560)
     }
 
-    private func copyCode() {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(game.exportCode(), forType: .string)
-        codeMessage = "Your code is copied — send it to your friend."
+    private func joinRoom() {
+        let code = joinCode.trimmingCharacters(in: .whitespaces)
+        guard code.count == 5 else { return }
+        relay.join(code: code, name: settings.multiplayerName)
     }
 
-    private func pasteCode() {
-        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else {
-            codeMessage = "Clipboard is empty — copy your friend's code first."; return
-        }
-        if game.importCode(s) {
-            codeMessage = "Loaded — it's your move."
-            showMultiplayer = false
-        } else {
-            codeMessage = "That doesn't look like a valid game code."
-        }
+    private func copyRoomCode(_ code: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(code, forType: .string)
+        codeMessage = "Code copied — send it to your friend."
     }
 
     private var boardView: some View {
@@ -640,6 +677,7 @@ enum ChessWindowPresenter {
     private static var window: NSWindow?
     private static let game = ChessGame()
     private static var multipeer: ChessMultipeer?
+    private static let relay = ChessRelay()
 
     static func show() {
         if multipeer == nil {
@@ -647,13 +685,14 @@ enum ChessWindowPresenter {
             mp.game = game
             multipeer = mp
         }
+        relay.game = game
         if let window {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
         let w = GameWindow.make(title: "Chess", design: CGSize(width: 460, height: 640)) {
-            ChessView(game: game, multipeer: multipeer!)
+            ChessView(game: game, multipeer: multipeer!, relay: relay)
         }
         window = w
         w.makeKeyAndOrderFront(nil)
