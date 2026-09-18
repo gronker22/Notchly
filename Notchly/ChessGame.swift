@@ -20,6 +20,7 @@ enum PieceKind: Int, Sendable {
     case pawn, knight, bishop, rook, queen, king
     var value: Int { [100, 320, 330, 500, 900, 0][rawValue] }
     var glyph: String { ["♟", "♞", "♝", "♜", "♛", "♚"][rawValue] } // filled set, tinted per colour
+    var hollowGlyph: String { ["♙", "♘", "♗", "♖", "♕", "♔"][rawValue] } // outline set, for inner detail
     var letter: String { ["", "N", "B", "R", "Q", "K"][rawValue] }
 }
 

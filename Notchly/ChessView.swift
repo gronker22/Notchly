@@ -329,26 +329,43 @@ struct ChessPieceView: View {
     let size: CGFloat
 
     private static let outlineOffsets: [CGSize] = {
-        let d: CGFloat = 1.1
+        let d: CGFloat = 1.2
         return [(-d,-d),(0,-d),(d,-d),(-d,0),(d,0),(-d,d),(0,d),(d,d)].map { CGSize(width: $0.0, height: $0.1) }
     }()
 
     var body: some View {
         let isWhite = color == .white
         let bodyFill = LinearGradient(
-            colors: isWhite ? [Color(white: 1.0), Color(white: 0.78)]
-                            : [Color(white: 0.38), Color(white: 0.06)],
+            colors: isWhite ? [Color(white: 1.0), Color(white: 0.86), Color(white: 0.70)]
+                            : [Color(white: 0.34), Color(white: 0.14), Color(white: 0.03)],
             startPoint: .top, endPoint: .bottom)
-        let outline = isWhite ? Color.black.opacity(0.8) : Color(white: 0.85).opacity(0.55)
+        let edge = isWhite ? Color.black.opacity(0.85) : Color.black.opacity(0.95)
+        let detail = isWhite ? Color.black.opacity(0.30) : Color.white.opacity(0.42)
 
         ZStack {
+            // Soft contact shadow so the piece "sits" on the square.
+            Ellipse()
+                .fill(Color.black.opacity(0.28))
+                .frame(width: size * 0.58, height: size * 0.15)
+                .offset(y: size * 0.40)
+                .blur(radius: 2.5)
+
+            // Crisp edge (filled glyph stamped in 8 directions).
             ForEach(0..<Self.outlineOffsets.count, id: \.self) { i in
-                Text(kind.glyph).offset(Self.outlineOffsets[i]).foregroundStyle(outline)
+                Text(kind.glyph).offset(Self.outlineOffsets[i]).foregroundStyle(edge)
             }
+            // Shaded body.
             Text(kind.glyph).foregroundStyle(bodyFill)
+            // Inner contour lines from the outline glyph, for a carved look.
+            Text(kind.hollowGlyph).foregroundStyle(detail)
+            // Top gloss highlight.
+            Text(kind.glyph)
+                .foregroundStyle(
+                    LinearGradient(colors: [.white.opacity(isWhite ? 0.55 : 0.28), .clear],
+                                   startPoint: .top, endPoint: .center))
         }
         .font(.system(size: size))
-        .shadow(color: .black.opacity(0.4), radius: 2, x: 0, y: 2)
+        .shadow(color: .black.opacity(0.45), radius: 2.5, x: 0, y: 2)
     }
 }
 
@@ -369,8 +386,9 @@ struct ChessView: View {
     private let darkSquare  = Color(red: 0.47, green: 0.58, blue: 0.34)
 
     var body: some View {
-        VStack(spacing: 14) {
+        VStack(spacing: 12) {
             header
+            statusBar
             boardView
             footer
         }
@@ -411,22 +429,38 @@ struct ChessView: View {
                 }
             }
             Spacer()
-            HStack(spacing: 8) {
-                if game.thinking { ProgressView().controlSize(.small).tint(.white) }
-                Text(game.message)
-                    .font(.system(.callout, design: .rounded).weight(.semibold))
-                    .foregroundStyle(statusTint)
-                    .animation(.easeInOut, value: game.message)
-                Button { showMultiplayer = true } label: {
-                    Image(systemName: "person.2.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(game.opponent == .ai ? .white.opacity(0.6) : .cyan)
-                }
-                .buttonStyle(.plain)
-                .help("Multiplayer")
+            Button { showMultiplayer = true } label: {
+                Label(game.opponent == .ai ? "Play a friend" : "Multiplayer", systemImage: "person.2.fill")
+                    .font(.system(.callout, design: .rounded).weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(Capsule().fill(mpTint))
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.25), lineWidth: 1))
+                    .shadow(color: mpTint.opacity(0.55), radius: 6, y: 2)
             }
+            .buttonStyle(.plain)
+            .help("Play against a friend — nearby or online")
         }
         .frame(width: board)
+    }
+
+    private var mpTint: Color {
+        switch (game.opponent, relay.phase == .connected || multipeer.connectedName != nil) {
+        case (.ai, _):        return .blue
+        case (_, true):       return .green
+        default:              return .orange
+        }
+    }
+
+    private var statusBar: some View {
+        HStack(spacing: 8) {
+            if game.thinking { ProgressView().controlSize(.small).tint(.white) }
+            Text(game.message)
+                .font(.system(.callout, design: .rounded).weight(.semibold))
+                .foregroundStyle(statusTint)
+                .animation(.easeInOut, value: game.message)
+        }
+        .frame(width: board, height: 18)
     }
 
     // MARK: Multiplayer sheet
@@ -553,8 +587,14 @@ struct ChessView: View {
             piecesLayer.allowsHitTesting(false)
         }
         .frame(width: board, height: board)
-        .clipShape(RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.white.opacity(0.15), lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        // Carved wooden edge + inner hairline, with a real drop shadow for depth.
+        .overlay(RoundedRectangle(cornerRadius: 6)
+            .strokeBorder(LinearGradient(colors: [Color(red: 0.28, green: 0.19, blue: 0.10),
+                                                  Color(red: 0.14, green: 0.09, blue: 0.04)],
+                                         startPoint: .top, endPoint: .bottom), lineWidth: 5))
+        .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.white.opacity(0.10), lineWidth: 1).padding(3))
+        .shadow(color: .black.opacity(0.55), radius: 16, x: 0, y: 10)
         .overlay(alignment: .center) { promotionOverlay }
     }
 
@@ -577,20 +617,48 @@ struct ChessView: View {
         let isLast = game.lastMove.map { $0.from == sq || $0.to == sq } ?? false
         let occupied = game.position.squares[sq] != nil
 
+        let coordColor = (isLight ? darkSquare : lightSquare).opacity(0.9)
+
         return ZStack {
+            // Base square with a hint of top-down shading.
             (isLight ? lightSquare : darkSquare)
-            if isLast { Color.yellow.opacity(0.30) }
-            if game.selected == sq { Color.yellow.opacity(0.45) }
+            LinearGradient(colors: [.white.opacity(0.06), .black.opacity(0.05)],
+                           startPoint: .top, endPoint: .bottom)
+
+            if isLast {
+                RoundedRectangle(cornerRadius: 3).fill(.yellow.opacity(0.28)).padding(1)
+            }
+            if game.selected == sq {
+                RoundedRectangle(cornerRadius: 3).fill(.yellow.opacity(0.30)).padding(1)
+                RoundedRectangle(cornerRadius: 3).strokeBorder(.yellow.opacity(0.9), lineWidth: 2.5).padding(1)
+            }
             if game.inCheckSquare == sq {
-                Circle().fill(RadialGradient(colors: [.red.opacity(0.85), .red.opacity(0.0)],
+                Circle().fill(RadialGradient(colors: [.red.opacity(0.9), .red.opacity(0.0)],
                                              center: .center, startRadius: 2, endRadius: cell * 0.6))
             }
+
+            // File letters along the bottom rank, rank numbers up the left file.
+            if rank == 0 {
+                Text(String(UnicodeScalar(UInt8(97 + file))))
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(coordColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(3)
+            }
+            if file == 0 {
+                Text("\(rank + 1)")
+                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                    .foregroundStyle(coordColor)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                    .padding(3)
+            }
+
             if isTarget {
                 if occupied {
                     Circle().strokeBorder(.black.opacity(0.32), lineWidth: 5).padding(3)
                         .transition(.opacity)
                 } else {
-                    Circle().fill(.black.opacity(0.24)).frame(width: 16, height: 16)
+                    Circle().fill(.black.opacity(0.22)).frame(width: 16, height: 16)
                         .transition(.scale.combined(with: .opacity))
                 }
             }
@@ -604,7 +672,7 @@ struct ChessView: View {
     private var piecesLayer: some View {
         ZStack {
             ForEach(game.renderPieces) { piece in
-                ChessPieceView(kind: piece.kind, color: piece.color, size: 38)
+                ChessPieceView(kind: piece.kind, color: piece.color, size: 41)
                     .scaleEffect(piece.captured ? 0.4 : (game.selected == piece.square ? 1.16 : 1.0))
                     .opacity(piece.captured ? 0 : 1)
                     .position(x: (CGFloat(piece.square & 7) + 0.5) * cell,
