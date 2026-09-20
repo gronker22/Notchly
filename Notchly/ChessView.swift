@@ -77,11 +77,19 @@ final class ChessGame: ObservableObject {
         wins = defaults.integer(forKey: "notchly.chess.wins")
         losses = defaults.integer(forKey: "notchly.chess.losses")
         draws = defaults.integer(forKey: "notchly.chess.draws")
+        refreshDerived()
         rebuildPieces()
     }
 
-    var inCheckSquare: Int? {
-        position.isInCheck(position.side) ? position.kingSquare(position.side) : nil
+    /// Cached once per position change — `squareCell` reads this for all 64
+    /// squares every frame, so it must NOT recompute attack scans.
+    @Published private(set) var inCheckSquare: Int?
+    private var cachedLegalMoves: [ChessMove] = []
+
+    /// One legal-move generation + one check test per position change.
+    private func refreshDerived() {
+        cachedLegalMoves = position.legalMoves()
+        inCheckSquare = position.isInCheck(position.side) ? position.kingSquare(position.side) : nil
     }
 
     func newGame() {
@@ -93,6 +101,7 @@ final class ChessGame: ObservableObject {
         pendingPromotion = nil
         thinking = false
         message = "Your move"
+        refreshDerived()
         rebuildPieces()
     }
 
@@ -126,7 +135,7 @@ final class ChessGame: ObservableObject {
         pendingPromotion = nil
     }
 
-    private func legalFrom(_ sq: Int) -> [ChessMove] { position.legalMoves().filter { $0.from == sq } }
+    private func legalFrom(_ sq: Int) -> [ChessMove] { cachedLegalMoves.filter { $0.from == sq } }
     private func clearSelection() { selected = nil; legalTargets = [] }
 
     // MARK: Applying + animating
@@ -284,17 +293,21 @@ final class ChessGame: ObservableObject {
     // MARK: Status
 
     private func updateStatus() {
-        if position.isCheckmate {
+        refreshDerived()
+        let noMoves = cachedLegalMoves.isEmpty
+        let inCheck = inCheckSquare != nil
+
+        if noMoves && inCheck {
             let winner = position.side.opposite
             status = .checkmate(winner: winner)
             if winner == localColor { wins += 1; message = "Checkmate — you win! 🏆" }
             else { losses += 1; message = "Checkmate — \(loserFacingWinnerName) wins." }
             persist()
-        } else if position.isStalemate {
+        } else if noMoves {
             status = .stalemate; draws += 1; message = "Stalemate — it's a draw."; persist()
         } else if position.halfmove >= 100 || position.isInsufficientMaterial {
             status = .draw; draws += 1; message = "Draw."; persist()
-        } else if position.isInCheck(position.side) {
+        } else if inCheck {
             message = isMyTurn ? "You're in check!" : "\(turnHolderName) is in check"
         } else if isMyTurn {
             message = "Your move"
@@ -328,44 +341,26 @@ struct ChessPieceView: View {
     let color: ChessColor
     let size: CGFloat
 
-    private static let outlineOffsets: [CGSize] = {
-        let d: CGFloat = 1.2
-        return [(-d,-d),(0,-d),(d,-d),(-d,0),(d,0),(-d,d),(0,d),(d,d)].map { CGSize(width: $0.0, height: $0.1) }
-    }()
-
     var body: some View {
         let isWhite = color == .white
         let bodyFill = LinearGradient(
-            colors: isWhite ? [Color(white: 1.0), Color(white: 0.86), Color(white: 0.70)]
-                            : [Color(white: 0.34), Color(white: 0.14), Color(white: 0.03)],
+            colors: isWhite ? [Color(white: 0.99), Color(white: 0.90), Color(white: 0.74)]
+                            : [Color(white: 0.32), Color(white: 0.17), Color(white: 0.07)],
             startPoint: .top, endPoint: .bottom)
-        let edge = isWhite ? Color.black.opacity(0.85) : Color.black.opacity(0.95)
-        let detail = isWhite ? Color.black.opacity(0.30) : Color.white.opacity(0.42)
+        let edge = Color.black.opacity(isWhite ? 0.85 : 1.0)
+        let detail = isWhite ? Color.black.opacity(0.42) : Color.white.opacity(0.45)
 
+        // Three vector draws instead of ~11 stacked Text rasterizations — this is
+        // what keeps the board smooth while pieces are sliding.
         ZStack {
-            // Soft contact shadow so the piece "sits" on the square.
-            Ellipse()
-                .fill(Color.black.opacity(0.28))
-                .frame(width: size * 0.58, height: size * 0.15)
-                .offset(y: size * 0.40)
-                .blur(radius: 2.5)
-
-            // Crisp edge (filled glyph stamped in 8 directions).
-            ForEach(0..<Self.outlineOffsets.count, id: \.self) { i in
-                Text(kind.glyph).offset(Self.outlineOffsets[i]).foregroundStyle(edge)
-            }
-            // Shaded body.
-            Text(kind.glyph).foregroundStyle(bodyFill)
-            // Inner contour lines from the outline glyph, for a carved look.
-            Text(kind.hollowGlyph).foregroundStyle(detail)
-            // Top gloss highlight.
-            Text(kind.glyph)
-                .foregroundStyle(
-                    LinearGradient(colors: [.white.opacity(isWhite ? 0.55 : 0.28), .clear],
-                                   startPoint: .top, endPoint: .center))
+            ChessPieceBody(kind: kind).fill(bodyFill)
+            ChessPieceBody(kind: kind)
+                .stroke(edge, style: StrokeStyle(lineWidth: size * 0.042, lineJoin: .round))
+            ChessPieceDetail(kind: kind)
+                .stroke(detail, style: StrokeStyle(lineWidth: size * 0.032, lineCap: .round))
         }
-        .font(.system(size: size))
-        .shadow(color: .black.opacity(0.45), radius: 2.5, x: 0, y: 2)
+        .frame(width: size, height: size)
+        .shadow(color: .black.opacity(0.38), radius: size * 0.045, x: 0, y: size * 0.03)
     }
 }
 
@@ -608,6 +603,7 @@ struct ChessView: View {
                 }
             }
         }
+        .animation(.easeInOut(duration: 0.15), value: game.legalTargets)
     }
 
     private func squareCell(rank: Int, file: Int) -> some View {
@@ -622,8 +618,6 @@ struct ChessView: View {
         return ZStack {
             // Base square with a hint of top-down shading.
             (isLight ? lightSquare : darkSquare)
-            LinearGradient(colors: [.white.opacity(0.06), .black.opacity(0.05)],
-                           startPoint: .top, endPoint: .bottom)
 
             if isLast {
                 RoundedRectangle(cornerRadius: 3).fill(.yellow.opacity(0.28)).padding(1)
@@ -666,13 +660,12 @@ struct ChessView: View {
         .frame(width: cell, height: cell)
         .contentShape(Rectangle())
         .onTapGesture { game.tap(sq) }
-        .animation(.easeInOut(duration: 0.15), value: game.legalTargets)
     }
 
     private var piecesLayer: some View {
         ZStack {
             ForEach(game.renderPieces) { piece in
-                ChessPieceView(kind: piece.kind, color: piece.color, size: 41)
+                ChessPieceView(kind: piece.kind, color: piece.color, size: cell * 0.94)
                     .scaleEffect(piece.captured ? 0.4 : (game.selected == piece.square ? 1.16 : 1.0))
                     .opacity(piece.captured ? 0 : 1)
                     .position(x: (CGFloat(piece.square & 7) + 0.5) * cell,
@@ -691,7 +684,7 @@ struct ChessView: View {
                 HStack(spacing: 10) {
                     ForEach([PieceKind.queen, .rook, .bishop, .knight], id: \.rawValue) { kind in
                         Button { game.completePromotion(kind) } label: {
-                            ChessPieceView(kind: kind, color: game.humanColor, size: 34)
+                            ChessPieceView(kind: kind, color: game.humanColor, size: 46)
                                 .frame(width: 52, height: 52)
                                 .background(RoundedRectangle(cornerRadius: 8).fill(.white.opacity(0.12)))
                         }
