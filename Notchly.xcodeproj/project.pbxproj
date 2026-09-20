@@ -250,7 +250,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Notchly reads the current track from Spotify and Apple Music to show it in the notch.";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Notchly shows your next event in the notch.";
@@ -297,7 +296,6 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_LSUIElement = YES;
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Notchly reads the current track from Spotify and Apple Music to show it in the notch.";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Notchly shows your next event in the notch.";
