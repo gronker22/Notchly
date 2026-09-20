@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	  Hardened Runtime is REQUIRED for notarization, and it blocks Apple Events
+	  by default. Notchly scripts Spotify / Apple Music to read the current
+	  track, so it needs this entitlement or Now Playing silently stops working
+	  once the app is notarized.
+	-->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
