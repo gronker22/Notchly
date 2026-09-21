@@ -58,8 +58,6 @@ struct NotchView: View {
     // Live sports
     @StateObject private var sports = SportsManager()
 
-    // Incoming-notification peek
-
     // Spring-driven, path-level animation parameters.
     @State private var width: CGFloat
     @State private var height: CGFloat
@@ -936,6 +934,46 @@ struct NotchView: View {
                 SettingsWindowPresenter.show(sports: sports)
             } label: {
                 Image(systemName: "gearshape.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Blackjack game.
+            Button {
+                BlackjackWindowPresenter.show()
+            } label: {
+                Image(systemName: "suit.spade.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Texas Hold'em poker.
+            Button {
+                HoldemWindowPresenter.show()
+            } label: {
+                Image(systemName: "suit.heart.fill")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Minesweeper.
+            Button {
+                MinesweeperWindowPresenter.show()
+            } label: {
+                Image(systemName: "flag.checkered")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+
+            // Chess.
+            Button {
+                ChessWindowPresenter.show()
+            } label: {
+                Image(systemName: "crown.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.5))
             }

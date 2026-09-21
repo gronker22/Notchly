@@ -33,6 +33,21 @@ final class NotchSettings: ObservableObject {
         didSet { defaults.set(hasCompletedOnboarding, forKey: "notchly.onboarded") }
     }
 
+    // MARK: - Multiplayer (chess)
+
+    /// Display name others see when you're available to play nearby / online.
+    @Published var multiplayerName: String {
+        didSet {
+            let trimmed = multiplayerName.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(trimmed.isEmpty ? Self.defaultPlayerName : trimmed, forKey: "notchly.mp.name")
+        }
+    }
+
+    static var defaultPlayerName: String {
+        let host = Host.current().localizedName ?? NSFullUserName()
+        return host.isEmpty ? "Player" : host
+    }
+
 
     // MARK: - Launch at login
 
@@ -54,6 +69,7 @@ final class NotchSettings: ObservableObject {
         showNowPlaying    = flag("notchly.mod.nowplaying")
         showSystemStats   = flag("notchly.mod.sysstats")
         hasCompletedOnboarding = store.bool(forKey: "notchly.onboarded")
+        multiplayerName = store.string(forKey: "notchly.mp.name") ?? Self.defaultPlayerName
 
         // Reflect the actual registered state so the toggle isn't out of sync.
         launchAtLogin = SMAppService.mainApp.status == .enabled
