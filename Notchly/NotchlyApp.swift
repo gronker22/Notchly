@@ -59,9 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // PHASE 6: prompt for Accessibility up front so window docking works on
-        // the first drop (no-op if already granted).
-        WindowDockManager.ensureTrusted()
 
         // Re-center if the screen configuration changes (display added/removed,
         // resolution change, notebook lid open/close, etc.).

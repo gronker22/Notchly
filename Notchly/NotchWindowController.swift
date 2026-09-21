@@ -184,7 +184,7 @@ final class TrackingHostingView<Content: View>: NSHostingView<Content> {
         self.state = state
         self.geometry = geometry
         super.init(rootView: rootView)
-        registerForDraggedTypes([.URL, .fileURL, .string])
+        registerForDraggedTypes([.fileURL])
     }
 
     @available(*, unavailable)
@@ -206,43 +206,41 @@ final class TrackingHostingView<Content: View>: NSHostingView<Content> {
         return super.hitTest(point)
     }
 
-    // MARK: - Drag-to-dock destination
+    // MARK: - File shelf drop destination
+
+    /// File URLs being dragged, if any.
+    private func fileURLs(_ sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+    }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard !fileURLs(sender).isEmpty else { return [] }
         state.isDragTargeting = true
-        state.isExpanded = true
-        updateDragHalf(sender)
-        return .generic
+        state.isExpanded = true          // open the island so the shelf is visible
+        return .copy
     }
 
     override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
-        updateDragHalf(sender)
-        return .generic
+        fileURLs(sender).isEmpty ? [] : .copy
     }
 
     override func draggingExited(_ sender: NSDraggingInfo?) {
-        endDragTargeting()
+        state.isDragTargeting = false
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        let half: WindowDockManager.Half = (state.dragHalf == .right) ? .right : .left
-        let ok = WindowDockManager.dock(to: half)
-        endDragTargeting()
-        return ok
+        let urls = fileURLs(sender)
+        state.isDragTargeting = false
+        guard !urls.isEmpty else { return false }
+        FileShelf.shared.add(urls)
+        return true
     }
 
     override func draggingEnded(_ sender: NSDraggingInfo) {
-        endDragTargeting()
-    }
-
-    private func updateDragHalf(_ sender: NSDraggingInfo) {
-        let x = sender.draggingLocation.x
-        state.dragHalf = (x < bounds.midX) ? .left : .right
-    }
-
-    private func endDragTargeting() {
         state.isDragTargeting = false
-        state.dragHalf = nil
-        state.isExpanded = false
+        // Leave `isExpanded` alone — the cursor-position hover logic owns it, so
+        // the panel stays open while the pointer is still over the bubble.
     }
 }

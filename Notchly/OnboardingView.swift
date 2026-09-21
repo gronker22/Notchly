@@ -16,7 +16,7 @@ struct OnboardingView: View {
 
     @State private var page = 0
     @State private var appear = false
-    private let pageCount = 4
+    private let pageCount = 5
 
     var body: some View {
         ZStack {
@@ -33,7 +33,8 @@ struct OnboardingView: View {
                     switch page {
                     case 0: welcomePage
                     case 1: hoverPage
-                    case 2: offSwitchPage
+                    case 2: shelfPage
+                    case 3: offSwitchPage
                     default: permissionsPage
                     }
                 }
@@ -61,7 +62,7 @@ struct OnboardingView: View {
             Text("Meet Notchly")
                 .font(.system(size: 34, design: .rounded).weight(.black))
                 .foregroundStyle(.white)
-            Text("Your Mac's notch, turned into a Dynamic-Island-style hub for music, timers, calendar, system stats, and a few games.")
+            Text("Live scores, your music, a file shelf, your next meeting and system stats — all in the notch, a hover away.")
                 .multilineTextAlignment(.center)
                 .font(.system(.title3, design: .rounded))
                 .foregroundStyle(.white.opacity(0.7))
@@ -74,6 +75,13 @@ struct OnboardingView: View {
             icon: "cursorarrow.rays",
             title: "Hover to open",
             body: "Move your pointer over the top-center notch and Notchly expands into the full island. Move away and it tucks back to a slim pill. It never steals your clicks.")
+    }
+
+    private var shelfPage: some View {
+        pageScaffold(
+            icon: "tray.and.arrow.down.fill",
+            title: "Drag files to the notch",
+            body: "Drop any file onto the notch and it parks on the shelf. Switch app, window or Space, then drag it straight back out. Double-click a file to reveal it in Finder.")
     }
 
     private var offSwitchPage: some View {
@@ -98,9 +106,7 @@ struct OnboardingView: View {
 
             VStack(spacing: 8) {
                 permissionRow("calendar", "Calendar", "Show your next event", Self.calendarURL)
-                permissionRow("bell.badge", "Notifications peek", "Needs Full Disk Access", Self.fullDiskURL)
                 permissionRow("music.note", "Now Playing", "Control Spotify / Music", Self.automationURL)
-                permissionRow("macwindow.on.rectangle", "Window docking", "Needs Accessibility", Self.accessibilityURL)
             }
             .frame(maxWidth: 480)
         }
@@ -174,9 +180,7 @@ struct OnboardingView: View {
 
     // System Settings privacy deep-links.
     static let calendarURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!
-    static let fullDiskURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")!
     static let automationURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation")!
-    static let accessibilityURL = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!
 }
 
 // MARK: - Animated notch illustration

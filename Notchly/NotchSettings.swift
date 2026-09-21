@@ -22,11 +22,9 @@ final class NotchSettings: ObservableObject {
 
     @Published var showPomodoro: Bool      { didSet { persist(\.showPomodoro,   "notchly.mod.pomodoro") } }
     @Published var showCalendar: Bool      { didSet { persist(\.showCalendar,   "notchly.mod.calendar") } }
-    @Published var showWiFi: Bool          { didSet { persist(\.showWiFi,       "notchly.mod.wifi") } }
     @Published var showMediaAccess: Bool   { didSet { persist(\.showMediaAccess,"notchly.mod.media") } }
     @Published var showClipboard: Bool     { didSet { persist(\.showClipboard,  "notchly.mod.clipboard") } }
     @Published var showNowPlaying: Bool    { didSet { persist(\.showNowPlaying, "notchly.mod.nowplaying") } }
-    @Published var showNotifications: Bool { didSet { persist(\.showNotifications,"notchly.mod.notifications") } }
     @Published var showSystemStats: Bool   { didSet { persist(\.showSystemStats,"notchly.mod.sysstats") } }
 
     // MARK: - Onboarding
@@ -51,11 +49,9 @@ final class NotchSettings: ObservableObject {
         func flag(_ key: String) -> Bool { store.object(forKey: key) == nil ? true : store.bool(forKey: key) }
         showPomodoro      = flag("notchly.mod.pomodoro")
         showCalendar      = flag("notchly.mod.calendar")
-        showWiFi          = flag("notchly.mod.wifi")
         showMediaAccess   = flag("notchly.mod.media")
         showClipboard     = flag("notchly.mod.clipboard")
         showNowPlaying    = flag("notchly.mod.nowplaying")
-        showNotifications = flag("notchly.mod.notifications")
         showSystemStats   = flag("notchly.mod.sysstats")
         hasCompletedOnboarding = store.bool(forKey: "notchly.onboarded")
 

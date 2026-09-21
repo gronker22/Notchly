@@ -29,8 +29,6 @@ struct SettingsView: View {
                 Divider()
                 teamsSection
                 Divider()
-                notificationsSection
-                Divider()
                 updatesSection
                 Divider()
                 testSection
@@ -61,13 +59,11 @@ struct SettingsView: View {
             Text("Turn off what you don't use — disabled modules stop polling entirely (saves battery) and disappear from the notch.")
                 .font(.caption).foregroundStyle(.secondary)
             Toggle("Now Playing (music)", isOn: $settings.showNowPlaying)
-            Toggle("System stats (CPU / RAM / network)", isOn: $settings.showSystemStats)
+            Toggle("System stats (CPU / RAM / network / Wi-Fi)", isOn: $settings.showSystemStats)
             Toggle("Pomodoro timer", isOn: $settings.showPomodoro)
             Toggle("Calendar", isOn: $settings.showCalendar)
-            Toggle("Wi-Fi strength", isOn: $settings.showWiFi)
             Toggle("Mic / camera indicator", isOn: $settings.showMediaAccess)
             Toggle("Clipboard history", isOn: $settings.showClipboard)
-            Toggle("Notification peek", isOn: $settings.showNotifications)
             Text("Changes to which modules run take effect after you quit and reopen Notchly.")
                 .font(.caption2).foregroundStyle(.tertiary)
         }
@@ -179,22 +175,6 @@ struct SettingsView: View {
     private func addTeam() {
         sports.addTeam(newTeam)
         newTeam = ""
-    }
-
-    // MARK: Notifications (Full Disk Access)
-
-    private var notificationsSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Notification peek").font(.headline)
-            Text("To briefly show incoming notifications in the notch, Notchly needs Full Disk Access (macOS keeps notifications in a protected database). Enable Notchly there, then relaunch.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Button("Open Full Disk Access settings") {
-                if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles") {
-                    NSWorkspace.shared.open(url)
-                }
-            }
-        }
     }
 
     // MARK: Test fetch

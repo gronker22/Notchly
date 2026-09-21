@@ -22,10 +22,8 @@ final class NotchState: ObservableObject {
     /// the empty area below it inside the fixed panel frame).
     @Published var bubbleHeight: CGFloat = 0
 
-    // Drag-to-dock state.
-    enum DropHalf { case left, right }
-    @Published var isDragTargeting: Bool = false   // a drag is hovering the island
-    @Published var dragHalf: DropHalf? = nil        // which zone is highlighted
+    /// True while a file drag is hovering the island (drives the shelf highlight).
+    @Published var isDragTargeting: Bool = false
 }
 
 /// Reports the expanded content's natural height up to the bubble.
@@ -55,14 +53,12 @@ struct NotchView: View {
     @StateObject private var clipboard = ClipboardManager()
     @StateObject private var wifi = WiFiMonitor()
     @StateObject private var systemStats = SystemStatsManager()
+    @ObservedObject private var shelf = FileShelf.shared
 
     // Live sports
     @StateObject private var sports = SportsManager()
 
     // Incoming-notification peek
-    @StateObject private var notifications = NotificationInterceptor()
-    @State private var bannerItem: NotificationItem?
-    @State private var bannerDismiss: DispatchWorkItem?
 
     // Spring-driven, path-level animation parameters.
     @State private var width: CGFloat
@@ -107,25 +103,17 @@ struct NotchView: View {
             // Single blob, or two split pills.
             bubbleBackground
 
-            // Collapsed presentation (hidden while a notification banner shows).
-            if bannerItem == nil {
-                if showSplit {
-                    splitContent
-                } else {
-                    collapsedContent
-                }
+            // Collapsed presentation.
+            if showSplit {
+                splitContent
+            } else {
+                collapsedContent
             }
 
             // Expanded: full module stack.
             expandedContent
 
-            // Incoming-notification peek (morphs the collapsed notch for 3s).
-            bannerOverlay
-
-            // PHASE 6: drag-to-dock zones, shown only while a drag is targeting.
-            if state.isDragTargeting {
-                dropZones
-            }
+            if state.isDragTargeting { dropHighlight }
         }
         // The view fills the whole (expanded-sized) panel; the shape draws
         // itself anchored to the top, so the panel never needs to resize.
@@ -140,7 +128,7 @@ struct NotchView: View {
             // while it's open. Collapsed, they go quiet (no AppleScript / CoreWLAN
             // wakeups), which lets the CPU idle instead of running ~15% forever.
             nowPlaying.setActive(expanded && settings.showNowPlaying)
-            wifi.setActive(expanded && settings.showWiFi)
+            wifi.setActive(expanded && settings.showSystemStats)
             systemStats.setActive(expanded && settings.showSystemStats)
         }
         .onPreferenceChange(ExpandedHeightKey.self) { h in
@@ -163,17 +151,12 @@ struct NotchView: View {
             if settings.showCalendar { calendar.start() }   // Pomodoro starts on user action.
             if settings.showMediaAccess { media.start() }
             if settings.showClipboard { clipboard.start() }
-            if settings.showWiFi { wifi.start() }
-            if settings.showSystemStats { systemStats.start() }
+            if settings.showSystemStats { systemStats.start(); wifi.start() }
             sports.start()                                   // has its own in-panel toggle
-            if settings.showNotifications { notifications.start() }
-        }
-        .onChange(of: notifications.latest) { _, item in
-            if let item { showBanner(item) }
         }
         // Drop the collapsed pill down only while there's info to show.
         .onChange(of: collapsedHasInfo) { _, _ in
-            if !state.isExpanded && bannerItem == nil {
+            if !state.isExpanded {
                 withAnimation(sizeSpring) { height = collapsedTargetHeight }
             }
         }
@@ -222,44 +205,6 @@ struct NotchView: View {
                     .fill(Color.black)               // pure #000000 to blend with the notch
             }
         }
-    }
-
-    // MARK: - PHASE 6: drag-to-dock zones
-
-    @ViewBuilder
-    private var dropZones: some View {
-        HStack(spacing: 8) {
-            dropZone(title: "Left half", system: "rectangle.lefthalf.inset.filled",
-                     active: state.dragHalf == .left)
-            dropZone(title: "Right half", system: "rectangle.righthalf.inset.filled",
-                     active: state.dragHalf == .right)
-        }
-        .padding(12)
-        .padding(.top, geometry.collapsedHeight)
-        .frame(width: geometry.expandedWidth, height: geometry.expandedHeight)
-        .transition(.opacity)
-        .animation(.easeInOut(duration: 0.15), value: state.dragHalf)
-    }
-
-    private func dropZone(title: String, system: String, active: Bool) -> some View {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(.white.opacity(active ? 0.22 : 0.06))
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(.white.opacity(active ? 0.8 : 0.25),
-                                  style: StrokeStyle(lineWidth: active ? 2 : 1, dash: [6, 4]))
-            )
-            .overlay(
-                VStack(spacing: 6) {
-                    Image(systemName: system)
-                        .font(.system(size: 22, weight: .semibold))
-                    Text(title)
-                        .font(.system(.caption, design: .rounded).weight(.semibold))
-                }
-                .foregroundStyle(.white.opacity(active ? 1 : 0.6))
-            )
-            .scaleEffect(active ? 1.0 : 0.97)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - PHASE 5: split content (left = timer, right = event warning)
@@ -377,11 +322,113 @@ struct NotchView: View {
         .allowsHitTesting(false)
     }
 
+    // MARK: - File shelf
+
+    /// Shown over the whole island while files are dragged onto it.
+    private var dropHighlight: some View {
+        RoundedRectangle(cornerRadius: 18, style: .continuous)
+            .fill(.white.opacity(0.10))
+            .overlay(
+                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                    .strokeBorder(.white.opacity(0.75),
+                                  style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+            )
+            .overlay(
+                VStack(spacing: 6) {
+                    Image(systemName: "tray.and.arrow.down.fill")
+                        .font(.system(size: 26, weight: .semibold))
+                    Text("Drop to add to the shelf")
+                        .font(.system(.caption, design: .rounded).weight(.semibold))
+                }
+                .foregroundStyle(.white)
+            )
+            .padding(10)
+            .padding(.top, geometry.collapsedHeight)
+            .frame(width: geometry.expandedWidth, height: geometry.expandedHeight)
+            .transition(.opacity)
+    }
+
+    @ViewBuilder
+    private var shelfRow: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 6) {
+                Image(systemName: "tray.full.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                Text("Shelf")
+                    .font(.system(.caption2, design: .rounded).weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.6))
+                Spacer(minLength: 0)
+                if !shelf.isEmpty {
+                    Button { shelf.clear() } label: {
+                        Text("Clear")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.white.opacity(0.5))
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+
+            if shelf.isEmpty {
+                Text("Drag files onto the notch to park them here")
+                    .font(.system(.caption2, design: .rounded))
+                    .foregroundStyle(.white.opacity(0.35))
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(shelf.items) { shelfChip($0) }
+                    }
+                    .padding(.top, 3)       // room for the remove badge
+                    .padding(.trailing, 4)
+                }
+                .frame(height: 58)
+            }
+        }
+    }
+
+    private func shelfChip(_ item: FileShelf.Item) -> some View {
+        VStack(spacing: 3) {
+            Image(nsImage: shelf.icon(for: item))
+                .resizable()
+                .frame(width: 26, height: 26)
+            Text(item.name)
+                .font(.system(size: 8, design: .rounded))
+                .foregroundStyle(.white.opacity(0.85))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 54)
+        }
+        .padding(.vertical, 5)
+        .padding(.horizontal, 4)
+        .background(RoundedRectangle(cornerRadius: 9).fill(.white.opacity(0.09)))
+        .overlay(alignment: .topTrailing) {
+            Button { shelf.remove(item) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.65))
+                    .background(Circle().fill(.black.opacity(0.45)))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 4, y: -4)
+        }
+        // Drag straight back out into Finder or any app.
+        .onDrag { NSItemProvider(contentsOf: item.url) ?? NSItemProvider() }
+        .onTapGesture(count: 2) { shelf.reveal(item) }
+        .help(item.url.path)
+    }
+
     // MARK: - Expanded island content
 
     @ViewBuilder
     private var expandedContent: some View {
         VStack(alignment: .leading, spacing: 12) {
+            // Sports leads the panel — it's the thing Notchly does that nothing
+            // else does.
+            if sports.isSportsEnabled {
+                SportsView(sports: sports)
+                Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
+            }
+
         HStack(alignment: .top, spacing: 16) {
             // LEFT column: Pomodoro, Calendar, Network, Clipboard, System stats.
             VStack(alignment: .leading, spacing: 12) {
@@ -398,11 +445,11 @@ struct NotchView: View {
                     }
                 }
 
-                if settings.showWiFi || settings.showMediaAccess {
-                    HStack(alignment: .center, spacing: 12) {
-                        if settings.showWiFi { wifiRow }
+                if settings.showMediaAccess {
+                    HStack(alignment: .center, spacing: 10) {
+                        cameraMirrorButton
                         Spacer(minLength: 0)
-                        if settings.showMediaAccess { mediaAccessRow }
+                        mediaAccessRow
                     }
                 }
 
@@ -441,11 +488,8 @@ struct NotchView: View {
             }
         }
 
-            // Sports section (Live / Yesterday) — only when enabled.
-            if sports.isSportsEnabled {
-                Rectangle().fill(.white.opacity(0.10)).frame(height: 1)
-                SportsView(sports: sports)
-            }
+            // File shelf — drag files onto the notch to park them.
+            shelfRow
 
             // Always-visible footer: settings + the sports on/off switch, so
             // sports can be re-enabled even when its section is hidden.
@@ -746,6 +790,24 @@ struct NotchView: View {
 
     // MARK: - PHASE 4: Mic/camera (expanded row)
 
+    /// Always available while the mic/camera module is on — a mirror is most
+    /// useful *before* a call, when the camera isn't in use yet.
+    private var cameraMirrorButton: some View {
+        Button { CameraMirrorPresenter.show() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "video.fill")
+                    .font(.system(size: 10, weight: .semibold))
+                Text("Mirror")
+                    .font(.system(size: 10, weight: .semibold, design: .rounded))
+            }
+            .foregroundStyle(.white.opacity(0.75))
+            .padding(.horizontal, 9).padding(.vertical, 5)
+            .background(Capsule().fill(.white.opacity(0.10)))
+        }
+        .buttonStyle(.plain)
+        .help("Open a camera mirror")
+    }
+
     @ViewBuilder
     private var mediaAccessRow: some View {
         if let info = activeMediaInfo {
@@ -897,85 +959,6 @@ struct NotchView: View {
             .controlSize(.mini)
             .tint(.green)
         }
-    }
-
-    // MARK: - Incoming notification banner
-
-    private var bannerWidth: CGFloat { min(geometry.expandedWidth, 360) }
-    private var bannerHeight: CGFloat { geometry.collapsedHeight + 26 }
-
-    @ViewBuilder
-    private var bannerOverlay: some View {
-        if let item = bannerItem, !state.isExpanded {
-            HStack(spacing: 10) {
-                if let icon = appIcon(item.bundleID) {
-                    Image(nsImage: icon)
-                        .resizable()
-                        .frame(width: 26, height: 26)
-                }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(item.title.isEmpty ? appName(item.bundleID) : item.title)
-                        .font(.system(size: 11, weight: .semibold, design: .rounded))
-                        .foregroundStyle(.white)
-                        .lineLimit(1)
-                    if !item.body.isEmpty {
-                        Text(firstLine(item.body))
-                            .font(.system(size: 10, design: .rounded))
-                            .foregroundStyle(.white.opacity(0.7))
-                            .lineLimit(1)
-                    }
-                }
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 14)
-            .padding(.bottom, 6)
-            .frame(width: bannerWidth, height: bannerHeight, alignment: .bottom)
-            .transition(.opacity)
-            .allowsHitTesting(false)
-        }
-    }
-
-    private func showBanner(_ item: NotificationItem) {
-        // Don't interrupt an open panel.
-        guard !state.isExpanded else { return }
-
-        bannerItem = item
-        withAnimation(sizeSpring) {
-            width = bannerWidth
-            height = bannerHeight
-        }
-
-        bannerDismiss?.cancel()
-        let work = DispatchWorkItem {
-            bannerItem = nil
-            if !state.isExpanded {
-                withAnimation(sizeSpring) {
-                    width = geometry.collapsedWidth
-                    height = geometry.collapsedHeight
-                }
-            }
-        }
-        bannerDismiss = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3, execute: work)
-    }
-
-    private func appIcon(_ bundleID: String) -> NSImage? {
-        guard !bundleID.isEmpty,
-              let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
-        else { return nil }
-        return NSWorkspace.shared.icon(forFile: url.path)
-    }
-
-    private func appName(_ bundleID: String) -> String {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID) else {
-            return "Notification"
-        }
-        return FileManager.default.displayName(atPath: url.path)
-            .replacingOccurrences(of: ".app", with: "")
-    }
-
-    private func firstLine(_ s: String) -> String {
-        s.components(separatedBy: .newlines).first ?? s
     }
 
     private func animate(to expanded: Bool) {

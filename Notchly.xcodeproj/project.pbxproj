@@ -254,6 +254,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Notchly reads the current track from Spotify and Apple Music to show it in the notch.";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Notchly shows your next event in the notch.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Notchly shows your next event in the notch.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Notchly shows a camera mirror so you can check yourself before a call.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
@@ -300,6 +301,7 @@
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Notchly reads the current track from Spotify and Apple Music to show it in the notch.";
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Notchly shows your next event in the notch.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Notchly shows your next event in the notch.";
+				INFOPLIST_KEY_NSCameraUsageDescription = "Notchly shows a camera mirror so you can check yourself before a call.";
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphoneos*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSceneManifest_Generation[sdk=iphonesimulator*]" = YES;
 				"INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents[sdk=iphoneos*]" = YES;
