@@ -10,9 +10,12 @@
 import Foundation
 import Combine
 
-/// The current app version. Bump this when cutting a release tag (vX.Y.Z).
+/// The current app version. Read from the bundle (driven by MARKETING_VERSION in
+/// the Xcode project) so it can never drift from what the .app actually reports
+/// — a hardcoded string here once made every build claim to be 1.5.1 while the
+/// bundle said 1.0, so "check for updates" always found an "update".
 enum AppInfo {
-    static let version = "1.5.1"
+    static let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     static let releasesURL = URL(string: "https://github.com/gronker22/Notchly/releases")!
     static let latestAPI = URL(string: "https://api.github.com/repos/gronker22/Notchly/releases/latest")!
 }

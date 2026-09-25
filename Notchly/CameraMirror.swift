@@ -52,8 +52,11 @@ final class CameraMirrorModel: ObservableObject {
     }
 
     func stop() {
+        guard session.isRunning else { return }
+        // .userInitiated, not .utility — this is what drops the camera light,
+        // so it must not sit behind background work.
         let s = session
-        Task.detached(priority: .utility) { s.stopRunning() }
+        Task.detached(priority: .userInitiated) { s.stopRunning() }
     }
 }
 
@@ -76,7 +79,10 @@ struct CameraPreview: NSViewRepresentable {
 }
 
 struct CameraMirrorView: View {
-    @StateObject private var model = CameraMirrorModel()
+    /// Owned by `CameraMirrorPresenter` so the session can be torn down on
+    /// window close — SwiftUI's `.onDisappear` does not fire for a window that
+    /// is merely ordered out, which is what left the camera light on.
+    @ObservedObject var model: CameraMirrorModel
 
     var body: some View {
         ZStack {
@@ -109,6 +115,8 @@ struct CameraMirrorView: View {
 @MainActor
 enum CameraMirrorPresenter {
     private static var window: NSWindow?
+    private static var model: CameraMirrorModel?
+    private static let closeWatcher = CameraMirrorCloseWatcher()
 
     static func show() {
         if let window {
@@ -116,15 +124,33 @@ enum CameraMirrorPresenter {
             NSApp.activate(ignoringOtherApps: true)
             return
         }
-        let hosting = NSHostingController(rootView: CameraMirrorView())
+        let m = CameraMirrorModel()
+        model = m
+        let hosting = NSHostingController(rootView: CameraMirrorView(model: m))
         let w = NSWindow(contentViewController: hosting)
         w.title = "Camera"
         w.styleMask = [.titled, .closable, .resizable]
         w.setContentSize(NSSize(width: 360, height: 270))
         w.center()
         w.isReleasedWhenClosed = false
+        w.delegate = closeWatcher
         window = w
         w.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Stops the capture session and drops the window so the next open builds a
+    /// fresh one. Called from `windowWillClose` and on app quit.
+    static func teardown() {
+        model?.stop()
+        model = nil
+        window?.delegate = nil
+        window = nil
+    }
+}
+
+private final class CameraMirrorCloseWatcher: NSObject, NSWindowDelegate {
+    func windowWillClose(_ notification: Notification) {
+        MainActor.assumeIsolated { CameraMirrorPresenter.teardown() }
     }
 }
