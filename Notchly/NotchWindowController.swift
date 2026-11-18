@@ -22,6 +22,7 @@ final class NotchWindowController {
 
     private var globalMouseMonitor: Any?
     private var localMouseMonitor: Any?
+    private var dropCatcher: NotchDropCatcher?
     private var cancellables = Set<AnyCancellable>()
 
     init() {
@@ -80,12 +81,27 @@ final class NotchWindowController {
                 self?.panel.ignoresMouseEvents = !(expanded || dragging)
             }
             .store(in: &cancellables)
+
+        // Hide the panel outright while Notchly shows a modal of its own,
+        // otherwise it paints over the file picker.
+        state.$isSuppressed
+            .receive(on: RunLoop.main)
+            .sink { [weak self] suppressed in
+                guard let self else { return }
+                self.panel.alphaValue = suppressed ? 0 : 1
+                self.panel.ignoresMouseEvents = suppressed ? true : self.panel.ignoresMouseEvents
+            }
+            .store(in: &cancellables)
     }
 
     // MARK: - Lifecycle
 
     func show() {
         panel.orderFrontRegardless()
+        // Separate always-interactive window over the notch; see
+        // NotchDropCatcher for why the main panel can't be the drop target.
+        dropCatcher = NotchDropCatcher(state: state, geometry: geometry)
+        dropCatcher?.show()
         startHoverMonitoring()
     }
 
@@ -108,7 +124,18 @@ final class NotchWindowController {
         updateHoverState()
     }
 
+    /// Debug aid: launch with NOTCHLY_PIN_OPEN=1 to hold the island open
+    /// without the pointer, so the expanded layout can be screenshotted.
+    private static let pinOpen = ProcessInfo.processInfo.environment["NOTCHLY_PIN_OPEN"] == "1"
+
     private func updateHoverState() {
+        if Self.pinOpen {
+            if !state.isExpanded { state.isExpanded = true }
+            // NOTCHLY_FAKE_DRAG=1 also shows the drop overlay, for screenshots.
+            if ProcessInfo.processInfo.environment["NOTCHLY_FAKE_DRAG"] == "1",
+               !state.isDragTargeting { state.isDragTargeting = true }
+            return
+        }
         // Leave it open while a drag-to-dock is in progress.
         guard !state.isDragTargeting else { return }
 
@@ -153,6 +180,7 @@ final class NotchWindowController {
     func repositionForCurrentScreen() {
         geometry = NotchGeometry.current()
         panel.setFrame(geometry.panelFrame, display: true)
+        dropCatcher?.reposition(geometry: geometry)
 
         let root = NotchView(state: state, geometry: geometry)
         let hosting = TrackingHostingView(rootView: root, state: state, geometry: geometry)

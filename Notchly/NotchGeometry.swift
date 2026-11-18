@@ -39,9 +39,21 @@ struct NotchGeometry {
     /// The dead-zone gap in the middle = the physical notch (0 on non-notch).
     var notchGap: CGFloat { hasHardwareNotch ? notchWidth : 0 }
 
-    /// Collapsed bubble WIDTH: the notch plus a flank on each side, so content
-    /// (timer, mic/camera) sits beside the notch rather than dropping below it.
+    /// Collapsed bubble WIDTH *while something is live*: the notch plus a flank
+    /// on each side, so content (timer, mic/camera, scores) sits beside the
+    /// notch rather than dropping below it.
     var collapsedWidth: CGFloat { notchGap + flankWidth * 2 }
+
+    /// Collapsed bubble WIDTH while idle: hug the hardware notch so Notchly is
+    /// invisible when it has nothing to say — it covers the camera housing and
+    /// the black around it, and no more. The couple of points of overhang stop
+    /// a hairline of wallpaper showing along the notch's rounded corners.
+    ///
+    /// On a display with no notch there's nothing to hide behind, so fall back
+    /// to a small pill rather than collapsing to nothing.
+    var collapsedIdleWidth: CGFloat {
+        hasHardwareNotch ? notchWidth + 4 : 132
+    }
     /// Collapsed height: always flush with the notch (never hangs down).
     var collapsedHeight: CGFloat { max(32, notchHeight) }
     var collapsedIdleHeight: CGFloat { max(32, notchHeight) }

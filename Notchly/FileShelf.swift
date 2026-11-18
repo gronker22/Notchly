@@ -12,6 +12,7 @@ import Foundation
 import AppKit
 import Combine
 import UniformTypeIdentifiers
+import os
 
 @MainActor
 final class FileShelf: ObservableObject {
@@ -26,7 +27,8 @@ final class FileShelf: ObservableObject {
 
     @Published private(set) var items: [Item] = []
 
-    private let maxItems = 12
+    /// Upper bound, user-configurable in Settings.
+    private var maxItems: Int { NotchSettings.shared.shelfLimit }
     private let defaults = UserDefaults.standard
     private let key = "notchly.shelf.paths"
 
@@ -36,18 +38,25 @@ final class FileShelf: ObservableObject {
             .map { URL(fileURLWithPath: $0) }
             .filter { FileManager.default.fileExists(atPath: $0.path) }
             .map { Item(url: $0) }
+        dropLog.log("""
+            FileShelf init: bundleID=\(Bundle.main.bundleIdentifier ?? "nil", privacy: .public) \
+            raw=\(String(describing: self.defaults.object(forKey: self.key)), privacy: .public) \
+            saved=\(saved.count) loaded=\(self.items.count)
+            """)
     }
 
     var isEmpty: Bool { items.isEmpty }
     var count: Int { items.count }
 
     func add(_ urls: [URL]) {
+        dropLog.log("FileShelf.add called with \(urls.count) url(s), limit=\(self.maxItems)")
         guard !urls.isEmpty else { return }
         for url in urls.reversed() where !items.contains(where: { $0.url == url }) {
             items.insert(Item(url: url), at: 0)
         }
         if items.count > maxItems { items = Array(items.prefix(maxItems)) }
         persist()
+        dropLog.log("FileShelf now holds \(self.items.count) item(s)")
     }
 
     func remove(_ item: Item) {
@@ -56,6 +65,7 @@ final class FileShelf: ObservableObject {
     }
 
     func clear() {
+        dropLog.log("FileShelf.clear called")
         items.removeAll()
         persist()
     }
@@ -70,6 +80,8 @@ final class FileShelf: ObservableObject {
     }
 
     private func persist() {
-        defaults.set(items.map { $0.url.path }, forKey: key)
+        let paths = items.map { $0.url.path }
+        dropLog.log("FileShelf.persist writing \(paths.count) path(s)")
+        defaults.set(paths, forKey: key)
     }
 }

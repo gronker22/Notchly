@@ -8,6 +8,27 @@
 	<array>
 		<string>_notchly-chess._tcp</string>
 		<string>_notchly-chess._udp</string>
+		<string>_notchly-poker._tcp</string>
+		<string>_notchly-poker._udp</string>
+	</array>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Add to Notchly Shelf</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>addToShelf</string>
+			<key>NSPortName</key>
+			<string>Notchly</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.file-url</string>
+				<string>NSFilenamesPboardType</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

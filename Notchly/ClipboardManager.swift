@@ -34,7 +34,8 @@ final class ClipboardManager: ObservableObject {
     // re-ingested as a new "copied" entry.
     private var suppressNextCapture = false
 
-    private let maxUnpinned = 8
+    /// Upper bound on unpinned entries, user-configurable in Settings.
+    private var maxUnpinned: Int { NotchSettings.shared.clipboardLimit }
     private let defaults = UserDefaults.standard
     private let pinnedKey = "notchly.clipboard.pinned"
 

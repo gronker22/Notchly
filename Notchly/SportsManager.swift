@@ -11,6 +11,9 @@
 
 import Foundation
 import Combine
+import os
+
+let sportsLog = Logger(subsystem: "com.notchly.Notchly", category: "sports")
 
 // MARK: - Public models
 
@@ -84,6 +87,8 @@ struct LiveGame: Identifiable {
     let awayLogo: URL?
     let homeColor: String?        // hex, no leading '#'
     let awayColor: String?
+    var homeID: String = ""
+    var awayID: String = ""
 }
 
 struct FinishedGame: Identifiable {
@@ -98,6 +103,21 @@ struct FinishedGame: Identifiable {
     let awayLogo: URL?
     let homeColor: String?
     let awayColor: String?
+    var homeID: String = ""
+    var awayID: String = ""
+}
+
+/// A team the user follows, picked from a league's roster (Apple Sports style).
+/// Matched by ESPN team id within its league, so "Inter" never catches
+/// "Internacional" the way a name search would.
+struct FollowedTeam: Codable, Hashable, Identifiable {
+    let league: League
+    let teamID: String
+    let name: String
+    let abbreviation: String
+    let logo: URL?
+    let color: String?
+    var id: String { "\(league.rawValue):\(teamID)" }
 }
 
 // MARK: - Manager
@@ -123,8 +143,32 @@ final class SportsManager: ObservableObject {
         }
     }
 
+    /// Legacy free-text follows (substring match on team names).
     @Published var followedTeams: [String] {
-        didSet { defaults.set(followedTeams, forKey: Keys.followedTeams) }
+        didSet { defaults.set(followedTeams, forKey: Keys.followedTeams); applyFilter() }
+    }
+    /// Teams picked from a league roster in Settings.
+    @Published var myTeams: [FollowedTeam] {
+        didSet {
+            if let data = try? JSONEncoder().encode(myTeams) {
+                defaults.set(data, forKey: Keys.myTeams)
+            }
+            applyFilter()   // re-filter what we have; no network round trip
+        }
+    }
+    private var rosterCache: [League: [FollowedTeam]] = [:]
+    /// Unfiltered results from the last fetch, so following or unfollowing a
+    /// team just re-filters instead of re-downloading every league.
+    private var rawLive: [LiveGame] = []
+    private var rawYesterday: [FinishedGame] = []
+
+    private func applyFilter() {
+        liveGames = filterFollowed(rawLive, league: \.league, homeID: \.homeID, awayID: \.awayID,
+                                   home: \.homeTeam, away: \.awayTeam,
+                                   homeAbbr: \.homeAbbr, awayAbbr: \.awayAbbr)
+        yesterdayResults = filterFollowed(rawYesterday, league: \.league, homeID: \.homeID, awayID: \.awayID,
+                                          home: \.homeTeam, away: \.awayTeam,
+                                          homeAbbr: { _ in "" }, awayAbbr: { _ in "" })
     }
     @Published var enabledLeagues: Set<League> {
         didSet {
@@ -136,6 +180,7 @@ final class SportsManager: ObservableObject {
     private let defaults = UserDefaults.standard
     private enum Keys {
         static let followedTeams = "notchly.followedTeams"
+        static let myTeams = "notchly.sports.myTeams"
         static let enabledLeagues = "notchly.enabledLeagues"
         static let enabled = "notchly.sports.enabled"
         static let leaguesMigrationV2 = "notchly.leagues.migration.v2"
@@ -146,6 +191,8 @@ final class SportsManager: ObservableObject {
     init() {
         isSportsEnabled = (defaults.object(forKey: Keys.enabled) as? Bool) ?? true
         followedTeams = defaults.stringArray(forKey: Keys.followedTeams) ?? []
+        myTeams = defaults.data(forKey: Keys.myTeams)
+            .flatMap { try? JSONDecoder().decode([FollowedTeam].self, from: $0) } ?? []
         if let raw = defaults.array(forKey: Keys.enabledLeagues) as? [String], !raw.isEmpty {
             enabledLeagues = Set(raw.compactMap(League.init(rawValue:)))
         } else {
@@ -211,6 +258,61 @@ final class SportsManager: ObservableObject {
         followedTeams.remove(at: index)
     }
 
+    func isFollowing(_ team: FollowedTeam) -> Bool { myTeams.contains { $0.id == team.id } }
+
+    func toggleFollow(_ team: FollowedTeam) {
+        if let i = myTeams.firstIndex(where: { $0.id == team.id }) {
+            myTeams.remove(at: i)
+        } else {
+            myTeams.append(team)
+        }
+    }
+
+    /// Every team in a league, alphabetical. Cached for the session.
+    /// Tries the league's /teams list first; ESPN's edge sometimes refuses
+    /// that one, so the standings table (which names every team too) is the
+    /// fallback.
+    func roster(for league: League) async -> [FollowedTeam] {
+        if let cached = rosterCache[league] { return cached }
+        var raw: [ESPNTeam] = []
+        if let data = await getJSON(baseURL + league.path + "/teams"),
+           let decoded = try? JSONDecoder().decode(ESPNTeamsResponse.self, from: data) {
+            raw = (decoded.sports?.first?.leagues?.first?.teams ?? []).compactMap(\.team)
+        }
+        if raw.isEmpty,
+           let data = await getJSON("https://site.api.espn.com/apis/v2/sports/" + league.path + "/standings"),
+           let node = try? JSONDecoder().decode(ESPNStandingsNode.self, from: data) {
+            raw = node.allTeams
+        }
+        if raw.isEmpty { sportsLog.error("roster \(league.rawValue, privacy: .public): no teams from either endpoint") }
+
+        var seen = Set<String>()
+        let teams = raw
+            .compactMap { t -> FollowedTeam? in
+                guard let id = t.id, let name = t.displayName, seen.insert(id).inserted else { return nil }
+                return FollowedTeam(league: league, teamID: id, name: name,
+                                    abbreviation: t.abbreviation ?? String(name.prefix(3)).uppercased(),
+                                    logo: (t.logos?.first?.href ?? t.logo).flatMap(URL.init(string:)),
+                                    color: t.color)
+            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        if !teams.isEmpty { rosterCache[league] = teams }
+        return teams
+    }
+
+    /// GET returning the body only when it's a 200 JSON response.
+    private func getJSON(_ string: String) async -> Data? {
+        guard let url = URL(string: string) else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 12
+        let result = try? await URLSession.shared.data(for: request)
+        guard let (data, response) = result,
+              let http = response as? HTTPURLResponse, http.statusCode == 200,
+              (http.value(forHTTPHeaderField: "Content-Type") ?? "").contains("json")
+        else { return nil }
+        return data
+    }
+
     /// Immediate fetch for the Settings "Test fetch" button.
     func testFetch() async -> String {
         await refresh()
@@ -244,9 +346,18 @@ final class SportsManager: ObservableObject {
         }
 
         // On total network failure, keep the last cached result.
+        // NOTCHLY_FAKE_SCORE=1 injects a live game (debug/screenshots).
+        if ProcessInfo.processInfo.environment["NOTCHLY_FAKE_SCORE"] == "1" {
+            anySuccess = true
+            games.insert(LiveGame(id: "fake", homeTeam: "Los Angeles Lakers", awayTeam: "Boston Celtics",
+                                  homeAbbr: "LAL", awayAbbr: "BOS", homeScore: 102, awayScore: 98,
+                                  state: .live, statusDetail: "Q4 2:31", league: .nba, link: nil,
+                                  homeLogo: nil, awayLogo: nil, homeColor: nil, awayColor: nil,
+                                  homeID: "13", awayID: "2"), at: 0)
+        }
         guard anySuccess else { return }
-        liveGames = filterFollowed(games, home: \.homeTeam, away: \.awayTeam,
-                                   homeAbbr: \.homeAbbr, awayAbbr: \.awayAbbr)
+        rawLive = games
+        applyFilter()
         lastUpdated = Date()
     }
 
@@ -282,8 +393,8 @@ final class SportsManager: ObservableObject {
         }
 
         guard anySuccess else { return }
-        yesterdayResults = filterFollowed(results, home: \.homeTeam, away: \.awayTeam,
-                                          homeAbbr: { _ in "" }, awayAbbr: { _ in "" })
+        rawYesterday = results
+        applyFilter()
     }
 
     // MARK: - Networking
@@ -343,7 +454,9 @@ final class SportsManager: ObservableObject {
             homeLogo: home.team?.logo.flatMap { URL(string: $0) },
             awayLogo: away.team?.logo.flatMap { URL(string: $0) },
             homeColor: home.team?.color,
-            awayColor: away.team?.color
+            awayColor: away.team?.color,
+            homeID: home.team?.id ?? "",
+            awayID: away.team?.id ?? ""
         )
     }
 
@@ -370,7 +483,9 @@ final class SportsManager: ObservableObject {
             homeLogo: home.team?.logo.flatMap { URL(string: $0) },
             awayLogo: away.team?.logo.flatMap { URL(string: $0) },
             homeColor: home.team?.color,
-            awayColor: away.team?.color
+            awayColor: away.team?.color,
+            homeID: home.team?.id ?? "",
+            awayID: away.team?.id ?? ""
         )
     }
 
@@ -459,14 +574,22 @@ final class SportsManager: ObservableObject {
 
     private func filterFollowed<T>(
         _ games: [T],
+        league: (T) -> League,
+        homeID: (T) -> String,
+        awayID: (T) -> String,
         home: (T) -> String,
         away: (T) -> String,
         homeAbbr: (T) -> String,
         awayAbbr: (T) -> String
     ) -> [T] {
-        guard !followedTeams.isEmpty else { return games }   // none followed → show all
+        guard !followedTeams.isEmpty || !myTeams.isEmpty else { return games }   // none followed → show all
         let needles = followedTeams.map { $0.lowercased() }
+        let picked = Set(myTeams.map(\.id))
         return games.filter { game in
+            let lg = league(game).rawValue
+            if picked.contains("\(lg):\(homeID(game))") || picked.contains("\(lg):\(awayID(game))") {
+                return true
+            }
             let haystacks = [home(game), away(game), homeAbbr(game), awayAbbr(game)]
                 .map { $0.lowercased() }
             return needles.contains { needle in
@@ -514,11 +637,34 @@ struct ESPNCompetitor: Decodable, Sendable {
 }
 
 struct ESPNTeam: Decodable, Sendable {
+    let id: String?
     let displayName: String?
     let shortDisplayName: String?
     let abbreviation: String?
     let logo: String?
     let color: String?
+    let logos: [ESPNLogo]?
+}
+
+struct ESPNLogo: Decodable, Sendable { let href: String? }
+
+/// Standings are nested (league → conference/group → table); every level
+/// may carry `children` and/or a `standings.entries` table.
+private final class ESPNStandingsNode: Decodable, @unchecked Sendable {
+    struct Table: Decodable { let entries: [Entry]? }
+    struct Entry: Decodable { let team: ESPNTeam? }
+    let children: [ESPNStandingsNode]?
+    let standings: Table?
+    var allTeams: [ESPNTeam] {
+        (standings?.entries ?? []).compactMap(\.team) + (children ?? []).flatMap(\.allTeams)
+    }
+}
+
+private struct ESPNTeamsResponse: Decodable, Sendable {
+    struct Sport: Decodable, Sendable { let leagues: [LeagueBlock]? }
+    struct LeagueBlock: Decodable, Sendable { let teams: [Wrapper]? }
+    struct Wrapper: Decodable, Sendable { let team: ESPNTeam? }
+    let sports: [Sport]?
 }
 
 struct ESPNLink: Decodable, Sendable {

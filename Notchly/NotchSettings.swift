@@ -26,6 +26,44 @@ final class NotchSettings: ObservableObject {
     @Published var showClipboard: Bool     { didSet { persist(\.showClipboard,  "notchly.mod.clipboard") } }
     @Published var showNowPlaying: Bool    { didSet { persist(\.showNowPlaying, "notchly.mod.nowplaying") } }
     @Published var showSystemStats: Bool   { didSet { persist(\.showSystemStats,"notchly.mod.sysstats") } }
+    @Published var showSystemHUD: Bool     { didSet { persist(\.showSystemHUD,  "notchly.mod.hud") } }
+
+    /// Off by default: the only module that costs an Accessibility prompt.
+    @Published var showNotifications: Bool { didSet { persist(\.showNotifications, "notchly.mod.notifications") } }
+
+    /// Whether the sports section is expanded in the panel. Collapsed by
+    /// default — scores are the reason to open Notchly occasionally, not every
+    /// time, and a full score list at the top made the panel open tall.
+    @Published var sportsExpanded: Bool { didSet { persist(\.sportsExpanded, "notchly.sports.expanded") } }
+
+    // MARK: - Appearance / behaviour
+
+    /// Shrink the collapsed pill back to the hardware notch when nothing is
+    /// live. Off = always show the full-width pill.
+    @Published var hugNotchWhenIdle: Bool { didSet { persist(\.hugNotchWhenIdle, "notchly.idle.hug") } }
+
+    /// Open the shelf automatically when a file is dragged toward the notch.
+    /// Off = dragging files near the top of the screen does nothing; files can
+    /// still be added with the Add button or the menu bar icon.
+    @Published var dragOpensShelf: Bool { didSet { persist(\.dragOpensShelf, "notchly.shelf.dragopen") } }
+
+    /// Show the "Update available" banner at the top of the panel.
+    @Published var showUpdateBanner: Bool { didSet { persist(\.showUpdateBanner, "notchly.update.banner") } }
+
+    /// How long the volume/brightness HUD stays on screen, in seconds.
+    @Published var hudDuration: Double {
+        didSet { defaults.set(hudDuration, forKey: "notchly.hud.duration") }
+    }
+
+    /// How many clipboard entries to keep.
+    @Published var clipboardLimit: Int {
+        didSet { defaults.set(clipboardLimit, forKey: "notchly.clipboard.limit") }
+    }
+
+    /// How many files the shelf holds before the oldest drops off.
+    @Published var shelfLimit: Int {
+        didSet { defaults.set(shelfLimit, forKey: "notchly.shelf.limit") }
+    }
 
     // MARK: - Onboarding
 
@@ -68,6 +106,19 @@ final class NotchSettings: ObservableObject {
         showClipboard     = flag("notchly.mod.clipboard")
         showNowPlaying    = flag("notchly.mod.nowplaying")
         showSystemStats   = flag("notchly.mod.sysstats")
+        showSystemHUD     = flag("notchly.mod.hud")
+        // Opt-in, not opt-out — it needs Accessibility, so default OFF.
+        showNotifications = store.bool(forKey: "notchly.mod.notifications")
+        sportsExpanded    = store.bool(forKey: "notchly.sports.expanded")
+        hugNotchWhenIdle  = flag("notchly.idle.hug")
+        showUpdateBanner  = flag("notchly.update.banner")
+        dragOpensShelf    = flag("notchly.shelf.dragopen")
+        let hud = store.double(forKey: "notchly.hud.duration")
+        hudDuration = hud > 0 ? hud : 1.6
+        let clip = store.integer(forKey: "notchly.clipboard.limit")
+        clipboardLimit = clip > 0 ? clip : 8
+        let shelf = store.integer(forKey: "notchly.shelf.limit")
+        shelfLimit = shelf > 0 ? shelf : 12
         hasCompletedOnboarding = store.bool(forKey: "notchly.onboarded")
         multiplayerName = store.string(forKey: "notchly.mp.name") ?? Self.defaultPlayerName
 

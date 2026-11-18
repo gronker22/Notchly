@@ -1,6 +1,6 @@
 cask "notchly" do
-  version "1.5.2"
-  sha256 "56ecc65299a90a598c9490de7ab468d7267acc03700298a726a4df11b55dfd92"
+  version "1.6.0"
+  sha256 "b26e6f484e3a0a53c5b7a90a4fded51cd66f4d062aa76f617dfac0f52c30ac31"
 
   # Universal build (Intel + Apple Silicon).
   url "https://github.com/gronker22/Notchly/releases/download/v#{version}/Notchly-Intel-Universal.zip"

@@ -13,8 +13,18 @@ import Combine
 // MARK: - Expanded section
 
 struct SportsView: View {
+
+    /// Show at most three games before scrolling, in both the live and the
+    /// yesterday list. Sports sits at the top of the panel, so an uncapped list
+    /// pushed the calendar, timer and clipboard off the bottom.
+    static let maxVisibleGames = 3
+    /// Three rows plus a league header, which is what three games occupy.
+    static let scrollHeight: CGFloat = 92
+
     @ObservedObject var sports: SportsManager
-    @State private var tab: Tab = .live
+    /// Owned by the caller, which draws the Live / Yesterday pills in its own
+    /// header row so an empty scores section costs one line, not three.
+    @Binding var tab: Tab
 
     enum Tab { case live, yesterday }
 
@@ -26,8 +36,6 @@ struct SportsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            header
-
             if tab == .live {
                 liveList
             } else {
@@ -39,21 +47,14 @@ struct SportsView: View {
 
     // MARK: Header + tabs
 
+    /// Tabs only. The section title and the live count live in the collapsible
+    /// "Scores" header that wraps this view, so repeating them here would just
+    /// be two headings stacked on top of each other.
     private var header: some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 6) {
-                Image(systemName: "sportscourt")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-                Text("Sports")
-                    .font(.system(.caption2, design: .rounded).weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.6))
-            }
-
-            Spacer(minLength: 8)
-
+        HStack(spacing: 6) {
             tabPill("Live", isOn: tab == .live) { tab = .live }
             tabPill("Yesterday", isOn: tab == .yesterday) { tab = .yesterday }
+            Spacer(minLength: 0)
         }
     }
 
@@ -84,15 +85,16 @@ struct SportsView: View {
     @ViewBuilder
     private var liveList: some View {
         if liveOrUpcoming.isEmpty {
-            emptyText("No live games right now")
-        } else if liveOrUpcoming.count <= 5 {
+            EmptyView()
+        } else if liveOrUpcoming.count <= Self.maxVisibleGames {
             groupedLiveContent
         } else {
-            // More than 5 — cap the height and scroll for the rest.
+            // Past three games, cap the height and scroll — the sports block was
+            // pushing everything else out of the panel on a busy night.
             ScrollView(.vertical, showsIndicators: true) {
                 groupedLiveContent
             }
-            .frame(height: 132)
+            .frame(height: Self.scrollHeight)
         }
     }
 
@@ -109,11 +111,32 @@ struct SportsView: View {
         }
     }
 
+    /// Each league in its own colour, so a mixed list separates at a glance
+    /// instead of being a run of identical grey labels.
+    private static func leagueTint(_ league: League) -> Color {
+        switch league {
+        case .nba:              return Color(red: 0.96, green: 0.45, blue: 0.22)  // court orange
+        case .euroLeague:       return Color(red: 1.00, green: 0.68, blue: 0.20)
+        case .premierLeague:    return Color(red: 0.74, green: 0.30, blue: 0.95)  // EPL purple
+        case .championsLeague:  return Color(red: 0.36, green: 0.62, blue: 1.00)
+        case .laLiga:           return Color(red: 1.00, green: 0.38, blue: 0.42)
+        case .greekSuperLeague: return Color(red: 0.32, green: 0.76, blue: 1.00)
+        case .worldCup:         return Color(red: 0.36, green: 0.84, blue: 0.56)
+        }
+    }
+
     private func leagueHeader(_ league: League) -> some View {
-        Text(league.displayName.uppercased())
-            .font(.system(size: 8, weight: .bold, design: .rounded))
-            .foregroundStyle(.white.opacity(0.45))
-            .padding(.top, 3)
+        let tint = Self.leagueTint(league)
+        return HStack(spacing: 5) {
+            Capsule()
+                .fill(tint)
+                .frame(width: 2.5, height: 9)
+            Text(league.displayName.uppercased())
+                .font(.system(size: 8, weight: .bold, design: .rounded))
+                .foregroundStyle(tint.opacity(0.95))
+                .kerning(0.4)
+        }
+        .padding(.top, 3)
     }
 
     private func liveRow(_ game: LiveGame) -> some View {
@@ -175,13 +198,13 @@ struct SportsView: View {
     private var yesterdayList: some View {
         if sports.yesterdayResults.isEmpty {
             emptyText("No games yesterday")
-        } else if sports.yesterdayResults.count <= 5 {
+        } else if sports.yesterdayResults.count <= Self.maxVisibleGames {
             groupedYesterdayContent
         } else {
             ScrollView(.vertical, showsIndicators: true) {
                 groupedYesterdayContent
             }
-            .frame(height: 132)
+            .frame(height: Self.scrollHeight)
         }
     }
 
@@ -307,11 +330,17 @@ struct SportsTicker: View {
         Group {
             if !live.isEmpty {
                 let game = live[min(index, live.count - 1)]
+                // One line, always: the flank is only 66pt wide, so a
+                // monospaced "LAL 102–98 BOS" wrapped onto two rows. Rounded
+                // digits are narrower, and it scales down rather than wrap.
                 Text(compact(game))
-                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .font(.system(size: 9.5, weight: .semibold, design: .rounded).monospacedDigit())
                     .foregroundStyle(.white)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+                    .allowsTightening(true)
                     .id(game.id)                                  // crossfade between games
-                    .transition(.move(edge: .trailing).combined(with: .opacity))
+                    .transition(.move(edge: .leading).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.4), value: live.first?.id)
@@ -326,6 +355,6 @@ struct SportsTicker: View {
     private func compact(_ g: LiveGame) -> String {
         let h = g.homeScore.map(String.init) ?? "0"
         let a = g.awayScore.map(String.init) ?? "0"
-        return "\(g.homeAbbr) \(h)–\(a) \(g.awayAbbr)"
+        return "\(g.homeAbbr) \(h)-\(a) \(g.awayAbbr)"
     }
 }

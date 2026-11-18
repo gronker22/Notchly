@@ -23,6 +23,10 @@ final class TexasHoldemGame: ObservableObject {
         let id: Int
         let name: String
         let isAI: Bool
+        /// Non-nil when this seat is another person on the network. Such a
+        /// seat neither acts as AI nor reads this Mac's UI — the host waits
+        /// for their action to arrive over the wire.
+        var remoteID: String? = nil
         var chips: Int
         var avatar: String = "person.fill"
         var trait: String = ""
@@ -295,6 +299,14 @@ final class TexasHoldemGame: ObservableObject {
 
             if let next = needsToAct(current) ? current : nextActor(after: current) {
                 current = next
+                if let remote = players[current].remoteID {
+                    // Another person's turn: publish the table and stop. The
+                    // host resumes when their action arrives.
+                    message = "Waiting for \(players[current].name)…"
+                    onTableChanged?()
+                    _ = remote
+                    return
+                }
                 if players[current].isAI {
                     try? await Task.sleep(nanoseconds: 700_000_000)
                     apply(aiDecide(current), by: current)
@@ -351,11 +363,47 @@ final class TexasHoldemGame: ObservableObject {
 
     // MARK: - Human actions (called from UI)
 
+    /// Called whenever the public table state changes, so a host can push a
+    /// snapshot to the other players. Nil for a purely local game.
+    var onTableChanged: (() -> Void)?
+
+    /// Apply an action that arrived from a networked player. Ignored unless it
+    /// really is that seat's turn, so a duplicated or late packet can't act
+    /// out of turn.
+    func applyRemote(_ action: PokerAction, from remoteID: String) {
+        guard let seat = players.firstIndex(where: { $0.remoteID == remoteID }),
+              seat == current,
+              stage != .handOver, stage != .idle else { return }
+        switch action {
+        case .fold:            apply(.fold, by: seat)
+        case .check:           apply(.check, by: seat)
+        case .call:            apply(.call, by: seat)
+        case .allIn:           apply(.allIn, by: seat)
+        case .raiseTo(let n):  apply(.raiseTo(n), by: seat)
+        }
+        resume()
+    }
+
+    /// Replace the table with a networked seating plan. Seat 0 stays this Mac.
+    func seat(_ roster: [(name: String, isBot: Bool, remoteID: String?)]) {
+        players = roster.enumerated().map { idx, r in
+            Player(id: idx, name: r.name, isAI: r.isBot,
+                   remoteID: r.remoteID,
+                   chips: idx == 0 ? players[0].chips : startingStack)
+        }
+        dealerButton = 0
+        stage = .idle
+        message = "Ready to deal"
+    }
+
     func youFold() { guard isYourTurn else { return }; apply(.fold, by: 0); resume() }
     func youCheckCall() { guard isYourTurn else { return }; apply(canCheck ? .check : .call, by: 0); resume() }
     func youRaise(to amount: Int) { guard isYourTurn else { return }; apply(.raiseTo(amount), by: 0); resume() }
     func youAllIn() { guard isYourTurn else { return }; apply(.allIn, by: 0); resume() }
-    private func resume() { Task { await processTurns() } }
+    private func resume() {
+        onTableChanged?()
+        Task { await processTurns() }
+    }
 
     // MARK: - Streets
 
@@ -412,6 +460,12 @@ final class TexasHoldemGame: ObservableObject {
         var contribs = players.map { $0.committed }
         var awards = [Int](repeating: 0, count: players.count)
         var allWinners = Set<Int>()
+        /// Chips handed back because nobody could match them — a lone
+        /// contender in a side-pot layer isn't winning anything, they're
+        /// getting their own uncalled bet returned.
+        var returned = [Int](repeating: 0, count: players.count)
+        /// Largest contested pot, for the headline.
+        var headline: (amount: Int, winners: [Int])?
 
         while contribs.contains(where: { $0 > 0 }) {
             let minC = contribs.filter { $0 > 0 }.min()!
@@ -423,6 +477,14 @@ final class TexasHoldemGame: ObservableObject {
                 if !players[i].folded { contenders.append(i) }
             }
             guard !contenders.isEmpty else { continue }
+
+            if contenders.count == 1 {
+                // Uncalled remainder: give it back, but don't call it a win.
+                awards[contenders[0]] += potAmount
+                returned[contenders[0]] += potAmount
+                continue
+            }
+
             let scored = contenders.map { ($0, HandEval.best7(players[$0].hole + community)) }
             let best = scored.map { $0.1 }.max { HandEval.compare($0, $1) < 0 }!
             let winners = scored.filter { HandEval.compare($0.1, best) == 0 }.map { $0.0 }
@@ -432,12 +494,60 @@ final class TexasHoldemGame: ObservableObject {
                 awards[w] += share + (k < rem ? 1 : 0)
                 allWinners.insert(w)
             }
+            if potAmount > (headline?.amount ?? -1) {
+                headline = (potAmount, winners)
+            }
         }
         for i in players.indices { players[i].chips += awards[i] }
 
-        let names = allWinners.sorted().map { players[$0].name }.joined(separator: " & ")
-        let handName = HandEval.name(HandEval.best7(players[allWinners.first ?? 0].hole + community))
-        finishHand(potTotal: total, winners: Array(allWinners), reason: "\(names) win \(total) — \(handName)")
+        // Report each winner with THEIR OWN hand. The old message named every
+        // winner but then printed a single hand name taken from the
+        // lowest-numbered seat — so when a side pot split two ways, a player
+        // who only got an uncalled bet back could lend their weaker hand's
+        // name to the whole line. That's what made a winning three of a kind
+        // get announced as "Two Pair".
+        let reason: String
+        if let headline, !headline.winners.isEmpty {
+            let parts = headline.winners.map { seat -> String in
+                let hand = HandEval.name(HandEval.best7(players[seat].hole + community))
+                return "\(players[seat].name) — \(hand)"
+            }
+            let joined = parts.joined(separator: " & ")
+            let extras = returned.indices
+                .filter { returned[$0] > 0 && !headline.winners.contains($0) }
+                .map { "\(players[$0].name) gets \(returned[$0]) back" }
+            reason = extras.isEmpty
+                ? "\(joined) wins \(headline.amount)"
+                : "\(joined) wins \(headline.amount) · \(extras.joined(separator: ", "))"
+        } else {
+            let names = allWinners.sorted().map { players[$0].name }.joined(separator: " & ")
+            reason = "\(names) win \(total)"
+        }
+        finishHand(potTotal: total, winners: Array(allWinners), reason: reason)
+    }
+
+    /// Public view of the table for the networked clients.
+    func makeSnapshot() -> PokerSnapshot {
+        PokerSnapshot(
+            players: players.map { p in
+                PokerSnapshot.PlayerView(
+                    seat: p.id, name: p.name, chips: p.chips, bet: p.bet,
+                    folded: p.folded, allIn: p.allIn, lastAction: p.lastAction,
+                    isBot: p.isAI,
+                    // Hole cards only leave the host once everyone is face up.
+                    revealedHole: revealAll ? p.hole.map { CardDTO(rank: $0.rank, suit: $0.suit.rawValue) } : [])
+            },
+            community: community.map { CardDTO(rank: $0.rank, suit: $0.suit.rawValue) },
+            pot: pot, toCall: currentBetToCall, minRaiseTo: minRaiseTo,
+            currentSeat: current, dealerSeat: dealerButton,
+            stage: String(describing: stage), message: message,
+            resultText: resultText, revealAll: revealAll)
+    }
+
+    /// Each seat's own cards, for the host to deal privately.
+    func holeCards(forSeat seat: Int) -> [CardDTO] {
+        guard players.indices.contains(seat) else { return [] }
+        return players[seat].hole.map { CardDTO(rank: $0.rank, suit: $0.suit.rawValue) }
     }
 
     private func finishHand(potTotal: Int, winners: [Int], reason: String) {
@@ -446,6 +556,7 @@ final class TexasHoldemGame: ObservableObject {
         resultText = reason
         biggestPot = max(biggestPot, potTotal)
         withAnimation(.easeInOut(duration: 0.3)) { winnerSeats = Set(winners) }
+        onTableChanged?()
         if winners.contains(0) { wins += 1; winStreak += 1; bonusAvailable = true }
         else { losses += 1; winStreak = 0 }
         persist()

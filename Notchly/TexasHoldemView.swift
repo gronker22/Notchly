@@ -14,6 +14,8 @@ struct TexasHoldemView: View {
     @State private var raiseAmount: Double = 0
     @State private var showPanel = false
     @State private var showSlot = false
+    @StateObject private var session = PokerSession()
+    @State private var showLobby = false
 
     var body: some View {
         VStack(spacing: 10) {
@@ -81,6 +83,43 @@ struct TexasHoldemView: View {
             SlotMachineView(onReward: { game.awardBonus($0) },
                             onClose: { showSlot = false; game.clearBonus() })
         }
+        .sheet(isPresented: $showLobby) {
+            PokerLobbyView(session: session,
+                           onStart: { showLobby = false; startNetworkedTable() },
+                           onClose: { showLobby = false })
+        }
+        .onAppear { wireSession() }
+    }
+
+    // MARK: - Multiplayer wiring
+
+    /// Host: push the table to everyone after each change, and apply actions
+    /// that arrive from the other players.
+    private func wireSession() {
+        game.onTableChanged = { [weak session] in
+            guard let session, session.role == .host else { return }
+            session.broadcast(game.makeSnapshot())
+            // Deal each networked player their own cards, privately.
+            for (seat, player) in game.players.enumerated() {
+                if let remote = player.remoteID {
+                    session.deal(game.holeCards(forSeat: seat), to: remote)
+                }
+            }
+        }
+        session.onGuestAction = { playerID, action in
+            game.applyRemote(action, from: playerID)
+        }
+    }
+
+    /// Turn the lobby's roster into real seats, then deal.
+    private func startNetworkedTable() {
+        let roster = session.finalSeating()
+        game.seat(roster.map { seat in
+            (name: seat.id == session.myID ? "You" : seat.name,
+             isBot: seat.isBot,
+             remoteID: (seat.isBot || seat.id == session.myID) ? nil : seat.id)
+        })
+        Task { await game.startHand() }
     }
 
     private var topBar: some View {
@@ -93,6 +132,20 @@ struct TexasHoldemView: View {
                 .font(.system(.subheadline, design: .rounded).weight(.heavy))
                 .foregroundStyle(.white.opacity(0.5))
             Spacer()
+            // Multiplayer
+            Button { showLobby = true } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "person.2.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text(session.role == .offline ? "Play a friend" : "Table")
+                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                }
+                .foregroundStyle(.black)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+                .background(Capsule().fill(Color(red: 0.35, green: 0.85, blue: 0.55)))
+            }
+            .buttonStyle(.plain)
+
             // AI coach on/off
             Button {
                 game.toggleCoach()
